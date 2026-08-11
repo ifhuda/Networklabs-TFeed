@@ -1,0 +1,72 @@
+[Unit]
+Description=IoC-WATCH Threat Feed Server (FortiSOAR -> FortiGate External Resource)
+Documentation=https://docs.fortinet.com/document/fortigate/7.4.4/administration-guide/891236/ip-address-threat-feed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# uvicorn tidak mengimplementasikan sd_notify, jadi Type=exec (BUKAN notify).
+Type=exec
+User=threatfeed
+Group=threatfeed
+WorkingDirectory=/opt/threatfeed
+EnvironmentFile=/etc/threatfeed/threatfeed.env
+
+# --workers 1 disengaja: SQLite hanya punya satu writer, dan pruner dijadwalkan
+# di dalam proses. Untuk >1 worker, pindah ke PostgreSQL (lihat README).
+ExecStart=/opt/threatfeed/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --workers 1 \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1 \
+    --timeout-keep-alive 20 \
+    --log-level info
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# --- logging ---------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=threatfeed
+
+# --- hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+# Satu-satunya path yang boleh ditulis
+ReadWritePaths=/var/lib/threatfeed
+
+# --- resource --------------------------------------------------------------
+LimitNOFILE=65535
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
