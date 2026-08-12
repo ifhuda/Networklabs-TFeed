@@ -1,9 +1,12 @@
 """Operasi data: upsert/dedup, query, generator feed FortiGate, pruning, audit."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from . import config
+from datetime import datetime, timezone
+
 from .database import days_ago, get_conn, transaction, utcnow
 
 INDICATOR_COLUMNS = (

@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a staged threatfeed database restore
+Documentation=file:///opt/threatfeed-src/docs/BACKUP-RESTORE.md
+
+[Path]
+PathExists=/var/lib/threatfeed/restore-pending.db
+Unit=threatfeed-restore-db.service
+
+[Install]
+WantedBy=multi-user.target

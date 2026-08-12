@@ -86,6 +86,7 @@ sudo bash deploy/setup.sh --yes \
 | [docs/INSTALL.md](docs/INSTALL.md) | Installation, TLS modes, upgrade, uninstall |
 | [docs/USAGE.md](docs/USAGE.md) | FortiSOAR payloads, FortiGate configuration, CLI, dashboard |
 | [docs/SYSTEM-CONFIG.md](docs/SYSTEM-CONFIG.md) | Admin page that rewrites `.env`, sudoers rule, recovery |
+| [docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md) | Automatic backups, restore, offline recovery |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | FortiDeceptor and generic third-party webhooks |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom-to-cause table drawn from real deployments |
 | [docs/id/PANDUAN.md](docs/id/PANDUAN.md) | Dokumentasi lengkap (Bahasa Indonesia) |

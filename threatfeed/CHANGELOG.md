@@ -30,9 +30,19 @@ First public release.
 - FortiGate CLI snippet generator in the admin page, with masked token, audit-logged
   reveal, a live count of matching indicators, and a copyable `curl` test command
 - `type=` filter on the feed endpoint; all value filters are now case-insensitive
+- Automatic backups on a schedule with rotation, plus restore from the Backup page —
+  from a stored snapshot or an uploaded file. Candidates are validated before anything is
+  touched, a pre-restore snapshot is always taken, and the helper rolls back if the
+  service will not start on the restored database
 - Export from the dashboard: indicators as CSV/JSON following the active filters, audit
   trail export, and a streamed SQLite snapshot download. CSV output is neutralised
   against spreadsheet formula injection
+
+- Automatic backups on a configurable interval with count-based rotation, plus a
+  Backup panel in the dashboard: create, download, delete, and restore
+- Restore from a server-side snapshot or an uploaded `.db`, guarded by file validation,
+  a pre-restore snapshot, and password confirmation; the swap runs in a root helper via
+  a systemd path unit
 
 ### Notes
 - SQLite with a single writer; `--workers 1` is deliberate

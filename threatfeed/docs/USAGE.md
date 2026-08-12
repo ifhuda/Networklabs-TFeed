@@ -303,6 +303,50 @@ client IP addresses, and settings overrides. Treat it as a production backup: st
 encrypted, and do not send it over unprotected channels. It uses SQLite's `backup` API,
 so it is safe to take while the service is running, unlike `cp`.
 
+### Backup & restore
+
+The **Backup** button opens a panel listing every snapshot on the server, with size,
+timestamp, and whether it was taken automatically or just before a restore.
+
+**Automatic backups** run on the same loop as TTL pruning. The schedule is computed from
+the last backup's timestamp rather than from process start, so a service that restarts
+often still gets one snapshot per interval instead of one per restart.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `TF_BACKUP_ENABLED` | `true` | Turn the scheduler on or off |
+| `TF_BACKUP_INTERVAL_HOURS` | `24` | How often a snapshot is taken |
+| `TF_BACKUP_KEEP` | `14` | Older snapshots are deleted beyond this count |
+| `TF_BACKUP_DIR` | `<db dir>/backups` | Must be writable by the service account |
+
+All four are editable from Konfigurasi Sistem.
+
+**Restoring** replaces the entire database. Two things happen first: the file is
+validated as a genuine IoC-WATCH database — SQLite header, `quick_check`, required
+tables and columns — and a snapshot of the current state is taken and kept as
+`…-pre-restore.db`. You are then asked for the dashboard password.
+
+You can restore from a snapshot on the server, or drag a `.db` file onto the panel.
+Uploaded files are inspected before anything changes: an invalid file is rejected with a
+reason and nothing is touched.
+
+The swap itself is done by a root helper (`threatfeed-restore-db`) triggered through a
+systemd path unit, the same pattern as the `.env` editor. The service must be stopped
+before its database file is replaced — swapping a file underneath a live SQLite
+connection leaves the old `-wal` journal pointing at the wrong database — and the
+application has no privilege to stop itself. Install it with:
+
+```bash
+sudo bash deploy/setup.sh --upgrade --enable-env-editor
+```
+
+Without the helper, backups still work; only the Restore button is unavailable, and the
+panel says so. The CLI path stays open either way:
+
+```bash
+sudo threatfeedctl restore /var/lib/threatfeed/backups/threatfeed-….db
+```
+
 The equivalent from the CLI:
 
 ```bash

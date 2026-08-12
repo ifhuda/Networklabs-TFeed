@@ -72,6 +72,15 @@ INGEST_ALLOWED_CIDRS = _list("TF_INGEST_ALLOWED_CIDRS")
 TRUST_PROXY = _bool("TF_TRUST_PROXY", True)   # baca X-Forwarded-For dari nginx
 AUDIT_RETENTION_DAYS = _int("TF_AUDIT_RETENTION_DAYS", 90)
 
+# --- backup otomatis -------------------------------------------------------
+# Snapshot ditulis oleh service sendiri, jadi direktorinya harus berada di bawah
+# ReadWritePaths=/var/lib/threatfeed. /var/backups milik root dan tidak dapat
+# ditulis service; itu wilayah `threatfeedctl backup` yang dijalankan root.
+BACKUP_ENABLED = _bool("TF_BACKUP_ENABLED", True)
+BACKUP_INTERVAL_HOURS = _int("TF_BACKUP_INTERVAL_HOURS", 24)
+BACKUP_KEEP = _int("TF_BACKUP_KEEP", 14)
+BACKUP_DIR = os.getenv("TF_BACKUP_DIR", "") or str(Path(DB_PATH).parent / "backups")
+
 # --- Nilai default entri ---------------------------------------------------
 DEFAULT_TYPE = os.getenv("TF_DEFAULT_TYPE", "IP Address")
 DEFAULT_SEVERITY = os.getenv("TF_DEFAULT_SEVERITY", "Medium")

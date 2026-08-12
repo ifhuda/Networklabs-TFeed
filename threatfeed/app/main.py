@@ -15,12 +15,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import (BackgroundTasks, Body, Depends, FastAPI, HTTPException, Query,
-                     Request, Response, status)
+from fastapi import (BackgroundTasks, Body, Depends, FastAPI, File, Form,
+                     HTTPException, Query, Request, Response, UploadFile, status)
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse, StreamingResponse)
 from pydantic import BaseModel, Field
 
+from . import backup as backup_mod
 from . import config, crud, envfile, security, settings as settings_store
 from .database import init_db, utcnow
 from .normalize import NormalizeError, deep_find_ips, flatten, parse_payload
@@ -40,6 +41,12 @@ async def _pruner():
                 log.info("prune %s", result)
                 await asyncio.to_thread(
                     crud.log_event, "prune", actor="system", detail=json.dumps(result))
+            # Backup menumpang siklus yang sama, bukan task terpisah: satu loop
+            # lebih mudah ditelusuri, dan jadwalnya dihitung dari waktu backup
+            # terakhir sehingga interval tetap benar meski service sering restart.
+            done = await asyncio.to_thread(backup_mod.run_scheduled)
+            if done:
+                log.info("backup otomatis: %s (%s byte)", done["name"], done["size"])
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -56,10 +63,14 @@ async def lifespan(app: FastAPI):
         log.warning("TF_INGEST_TOKENS kosong — endpoint /api/v1/ingest akan menolak semua request.")
     if not config.ADMIN_PASSWORD:
         log.warning("TF_ADMIN_PASSWORD kosong — login dashboard tidak dapat dilakukan.")
-    task = asyncio.create_task(_pruner())
+    tasks = [asyncio.create_task(_pruner())]
+    if config.BACKUP_ENABLED:
+        log.info("backup otomatis aktif: tiap %s jam, simpan %s, dir=%s",
+                 config.BACKUP_INTERVAL_HOURS, config.BACKUP_KEEP, config.BACKUP_DIR)
     log.info("%s siap. db=%s ttl=%sd", config.APP_NAME, config.DB_PATH, config.TTL_DAYS)
     yield
-    task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title=config.APP_NAME, version="1.0.0", lifespan=lifespan,
@@ -723,6 +734,134 @@ async def export_backup(request: Request, actor: str = Depends(security.require_
         background.add_task(shutil.rmtree, tmp.parent, ignore_errors=True)
     return FileResponse(str(tmp), media_type="application/octet-stream",
                         filename=tmp.name, background=background)
+
+
+# ===================================================== BACKUP & RESTORE (GUI)
+class RestoreBody(BaseModel):
+    name: str = ""
+    confirm_password: str = ""
+
+
+@app.get("/api/v1/backups", tags=["backup"])
+async def backups_list(actor: str = Depends(security.require_session)):
+    return {"backups": await asyncio.to_thread(backup_mod.listing),
+            "stats": await asyncio.to_thread(backup_mod.stats)}
+
+
+@app.post("/api/v1/backups", tags=["backup"])
+async def backups_create(request: Request, actor: str = Depends(security.require_session)):
+    ip, ua = _req_meta(request)
+    try:
+        info = await asyncio.to_thread(backup_mod.create)
+    except backup_mod.BackupError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
+    removed = await asyncio.to_thread(backup_mod.rotate, config.BACKUP_KEEP)
+    await asyncio.to_thread(crud.log_event, "backup_manual", actor, ip, ua, entries_ok=1,
+                            detail=f"{info['name']} bytes={info['size']} dibuang={len(removed)}")
+    return {**info, "removed": removed}
+
+
+@app.get("/api/v1/backups/{name}", tags=["backup"])
+async def backups_download(name: str, request: Request,
+                           actor: str = Depends(security.require_session)):
+    try:
+        path = await asyncio.to_thread(backup_mod.resolve, name)
+    except backup_mod.BackupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    ip, ua = _req_meta(request)
+    await asyncio.to_thread(crud.log_event, "backup_download", actor, ip, ua,
+                            detail=f"file={name}")
+    return FileResponse(str(path), media_type="application/octet-stream", filename=name)
+
+
+@app.delete("/api/v1/backups/{name}", tags=["backup"])
+async def backups_delete(name: str, request: Request,
+                         actor: str = Depends(security.require_session)):
+    try:
+        await asyncio.to_thread(backup_mod.delete, name)
+    except backup_mod.BackupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    ip, ua = _req_meta(request)
+    await asyncio.to_thread(crud.log_event, "backup_delete", actor, ip, ua, detail=f"file={name}")
+    return {"status": "ok", "deleted": name}
+
+
+@app.post("/api/v1/backups/inspect", tags=["backup"])
+async def backups_inspect(file: UploadFile = File(...),
+                          actor: str = Depends(security.require_session)):
+    """Periksa berkas unggahan tanpa mengubah apa pun."""
+    tmpdir = Path(tempfile.mkdtemp(prefix="tf-inspect-"))
+    try:
+        dest = tmpdir / "candidate.db"
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=1024 * 1024)
+        try:
+            return {"valid": True, **await asyncio.to_thread(backup_mod.validate, dest)}
+        except backup_mod.BackupError as exc:
+            return {"valid": False, "error": str(exc)}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def _do_restore(source: Path, actor: str, ip: str, ua: str, origin: str) -> dict:
+    if not backup_mod.restore_available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Helper {backup_mod.RESTORE_HELPER} tidak terpasang. Jalankan di server: "
+            f"sudo bash deploy/setup.sh --upgrade --enable-env-editor")
+    try:
+        info = await asyncio.to_thread(backup_mod.stage_restore, source)
+    except backup_mod.BackupError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+
+    await asyncio.to_thread(crud.log_event, "restore_started", actor, ip, ua,
+                            entries_ok=info["indicators"], detail=f"dari={origin}")
+    ok_done, message = await asyncio.to_thread(backup_mod.wait_restore)
+    if not ok_done:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"Pemulihan tidak selesai: {message}")
+    return {"status": "ok", "restored": info, "helper_output": message,
+            "message": "Database dipulihkan dan service dijalankan ulang. "
+                       "Sesi Anda mungkin perlu login ulang."}
+
+
+@app.post("/api/v1/backups/restore", tags=["backup"])
+async def backups_restore(request: Request, body: RestoreBody,
+                          actor: str = Depends(security.require_session)):
+    """Pulihkan dari salah satu backup yang sudah ada di server."""
+    ip, ua = _req_meta(request)
+    if not security.verify_password(body.confirm_password):
+        await asyncio.to_thread(crud.log_event, "restore_denied", actor, ip, ua,
+                                status_code=401, detail="password konfirmasi salah")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Password dashboard salah. Pemulihan menimpa seluruh database, "
+                            "jadi konfirmasi diperlukan.")
+    try:
+        path = await asyncio.to_thread(backup_mod.resolve, body.name)
+    except backup_mod.BackupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    return await _do_restore(path, actor, ip, ua, body.name)
+
+
+@app.post("/api/v1/backups/restore-upload", tags=["backup"])
+async def backups_restore_upload(request: Request, file: UploadFile = File(...),
+                                 confirm_password: str = Form(""),
+                                 actor: str = Depends(security.require_session)):
+    """Pulihkan dari berkas .db yang diunggah operator."""
+    ip, ua = _req_meta(request)
+    if not security.verify_password(confirm_password):
+        await asyncio.to_thread(crud.log_event, "restore_denied", actor, ip, ua,
+                                status_code=401, detail="password konfirmasi salah")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Password dashboard salah.")
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="tf-restore-"))
+    try:
+        dest = tmpdir / "uploaded.db"
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=1024 * 1024)
+        return await _do_restore(dest, actor, ip, ua, file.filename or "unggahan")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @app.get("/api/v1/audit", tags=["dashboard"])

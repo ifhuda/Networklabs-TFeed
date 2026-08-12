@@ -37,6 +37,7 @@ die() {
 }
 
 [[ $EUID -eq 0 ]] || die "harus dijalankan sebagai root"
+
 [[ -f $SPOOL   ]] || die "tidak ada berkas kandidat di $SPOOL"
 [[ -f $TARGET  ]] || die "$TARGET tidak ditemukan"
 

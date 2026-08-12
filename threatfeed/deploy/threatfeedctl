@@ -11,7 +11,8 @@ DATA_DIR=/var/lib/threatfeed
 CONF_DIR=/etc/threatfeed
 ENV_FILE="$CONF_DIR/threatfeed.env"
 DB="$DATA_DIR/threatfeed.db"
-BACKUP_DIR=/var/backups/threatfeed
+BACKUP_DIR=/var/backups/threatfeed                    # backup manual root (cron)
+APP_BACKUP_DIR=/var/lib/threatfeed/backups            # snapshot otomatis service
 
 if [[ -t 1 ]]; then
   C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_C=$'\033[36m'; C_B=$'\033[1m'; C_0=$'\033[0m'
@@ -70,6 +71,7 @@ ${C_B}threatfeedctl${C_0} — kelola IoC-WATCH Threat Feed Server
   ${C_C}prune${C_0}               Jalankan pruning TTL sekarang
   ${C_C}expire${C_0} <IP>         Cabut satu IP dari feed
   ${C_C}backup${C_0}              Backup database (aman saat service hidup)
+  ${C_C}backups${C_0}             Daftar semua backup, otomatis maupun manual
   ${C_C}restore${C_0} <file>      Pulihkan database dari backup
 
   ${C_C}rotate${C_0} ingest|feed|admin    Ganti kredensial tanpa downtime
@@ -256,17 +258,46 @@ backup)
   ls -1t "$BACKUP_DIR" | awk 'NR>14' | while read -r old; do rm -f "$BACKUP_DIR/$old"; done
   ;;
 
+backups)
+  printf '%sSnapshot otomatis%s  %s\n' "$C_B" "$C_0" "$APP_BACKUP_DIR"
+  if compgen -G "$APP_BACKUP_DIR/*.db" >/dev/null; then
+    ls -lht "$APP_BACKUP_DIR"/*.db | awk '{printf "  %-10s %s %s %s  %s\n", $5, $6, $7, $8, $9}'
+  else
+    printf '  (kosong)\n'
+  fi
+  printf '\n%sBackup manual%s      %s\n' "$C_B" "$C_0" "$BACKUP_DIR"
+  if compgen -G "$BACKUP_DIR/*.db" >/dev/null; then
+    ls -lht "$BACKUP_DIR"/*.db | awk '{printf "  %-10s %s %s %s  %s\n", $5, $6, $7, $8, $9}'
+  else
+    printf '  (kosong)\n'
+  fi
+  printf '\nPulihkan dengan: sudo threatfeedctl restore <path-lengkap>\n'
+  ;;
+
 restore)
   need_root
-  [[ $# -gt 0 && -f $1 ]] || die "Pakai: threatfeedctl restore /var/backups/threatfeed/xxx.db"
+  [[ $# -gt 0 && -f $1 ]] || die "Pakai: threatfeedctl restore <path>
+    Lihat daftar dengan: threatfeedctl backups"
+
+  # Validasi sebelum menyentuh apa pun. Memulihkan berkas yang bukan database
+  # IoC-WATCH akan menghentikan service dengan pesan yang tidak menjelaskan
+  # apa-apa, sesudah database asli terlanjur diganti.
+  as_app sqlite3 "$1" "SELECT 1 FROM indicators LIMIT 1;" >/dev/null 2>&1 \
+    || die "$1 bukan database IoC-WATCH yang sah (tabel indicators tidak terbaca)"
+  N=$(as_app sqlite3 "$1" "SELECT COUNT(*) FROM indicators;" 2>/dev/null || echo "?")
+  CUR=$(as_app sqlite3 "$DB" "SELECT COUNT(*) FROM indicators;" 2>/dev/null || echo "?")
+  printf 'Backup berisi : %s indikator\nDatabase kini : %s indikator\n\n' "$N" "$CUR"
   read -r -p "Timpa database saat ini dengan $1? [y/N] " a
   [[ ${a,,} == y ]] || exit 0
   systemctl stop threatfeed
-  cp "$DB" "$DB.before-restore-$(date +%s)" 2>/dev/null || true
+  install -d -o "$APP_USER" -g "$APP_USER" -m 750 "$APP_BACKUP_DIR"
+  SAFETY="$APP_BACKUP_DIR/threatfeed-$(date +%Y%m%d-%H%M%S)-pre-restore.db"
+  cp "$DB" "$SAFETY" 2>/dev/null && chown "$APP_USER:$APP_USER" "$SAFETY" || true
   rm -f "$DB" "$DB-wal" "$DB-shm"
   install -o "$APP_USER" -g "$APP_USER" -m 640 "$1" "$DB"
   systemctl start threatfeed
   printf '%s✓%s Dipulihkan dari %s\n' "$C_G" "$C_0" "$1"
+  printf '  Keadaan sebelumnya tersimpan: %s\n' "${SAFETY:-tidak ada}"
   ;;
 
 rotate)

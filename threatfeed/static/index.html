@@ -262,6 +262,23 @@ tbody tr:last-child td{border-bottom:0}
 .menu button:hover{background:var(--surface-3)}
 .menu button small{display:block;color:var(--muted);font-size:10.5px;margin-top:2px}
 .menu hr{border:0;border-top:1px solid var(--line);margin:5px 0}
+.bkrow{
+  display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid var(--line-soft);
+}
+.bkrow:last-child{border-bottom:0}
+.bkrow .nm{flex:1;min-width:0;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.bkrow .nm small{display:block;color:var(--muted);font-size:10.5px;font-family:var(--sans);margin-top:2px}
+.bkrow .tag{
+  font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  padding:2px 6px;border-radius:2px;border:1px solid var(--line);color:var(--dim);
+}
+.bkrow .tag.auto{color:var(--accent);border-color:var(--accent-dim)}
+.bkempty{padding:26px 0;text-align:center;color:var(--muted);font-size:12px}
+.dropzone{
+  border:1px dashed var(--line);border-radius:var(--r);padding:16px;text-align:center;
+  color:var(--muted);font-size:12px;margin-top:14px;cursor:pointer;
+}
+.dropzone:hover,.dropzone.over{border-color:var(--accent);color:var(--text)}
 .menu .lbl{
   font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
   font-weight:600;padding:7px 10px 4px;
@@ -320,6 +337,7 @@ tbody tr:last-child td{border-bottom:0}
     <div class="spacer"></div>
     <span class="pill"><span class="dot" id="healthDot"></span><span id="healthTxt">menghubungkan…</span></span>
     <button class="btn ghost" id="btnSettings">Pengaturan</button>
+    <button class="btn ghost" id="btnBackups">Backup</button>
     <button class="btn ghost" id="btnSysConfig">Konfigurasi Sistem</button>
     <button class="btn ghost" id="btnRefresh">Muat ulang</button>
     <button class="btn ghost" id="btnPrune">Jalankan pruning</button>
@@ -421,6 +439,22 @@ tbody tr:last-child td{border-bottom:0}
       <span class="serr" id="settingsErr"></span>
       <button class="btn ghost" id="btnResetSettings">Kembalikan ke .env</button>
       <button class="btn primary" id="btnSaveSettings">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<div class="drawer" id="bkdrawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Backup &amp; Pemulihan</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseBk">Tutup</button>
+    </div>
+    <div class="body" id="bkBody"></div>
+    <div class="foot">
+      <span class="serr" id="bkErr"></span>
+      <div class="spacer"></div>
+      <button class="btn primary" id="btnMakeBackup">Buat backup sekarang</button>
     </div>
   </div>
 </div>
@@ -741,6 +775,142 @@ $('#btnResetSettings').onclick = async () => {
   await api('/api/v1/settings/reset', {method:'POST', body:JSON.stringify({changes:{}})});
   toast('Dikembalikan ke nilai .env.');
   await openSettings(); boot();
+};
+
+/* ------------------------------------------------------- backup & pemulihan */
+function fmtBytes(n){
+  if(n < 1024) return n + ' B';
+  if(n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(1) + ' MB';
+}
+
+async function openBackups(){
+  $('#bkdrawer').classList.add('on');
+  $('#bkErr').textContent = '';
+  $('#bkBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  let d;
+  try{ d = await api('/api/v1/backups'); }
+  catch(err){ $('#bkBody').innerHTML = `<div class="notice off">${esc(err.message)}</div>`; return; }
+
+  const s = d.stats, items = d.backups || [];
+  const sched = s.enabled
+    ? `Backup otomatis aktif setiap <b>${s.interval_hours} jam</b>, menyimpan <b>${s.keep}</b> salinan terakhir.`
+    : `<b>Backup otomatis nonaktif.</b> Aktifkan lewat TF_BACKUP_ENABLED di Konfigurasi Sistem.`;
+  const restoreWarn = s.restore_available ? '' :
+    `<div class="notice off"><b>Pemulihan belum tersedia.</b> Helper root belum terpasang —
+     jalankan di server: <code>sudo bash deploy/setup.sh --upgrade --enable-env-editor</code>.
+     Backup tetap dapat dibuat dan diunduh.</div>`;
+
+  $('#bkBody').innerHTML = `
+    <div class="notice${s.enabled ? '' : ' off'}">${sched}<br>
+      Direktori: <code>${esc(s.directory)}</code> · ${s.count} berkas · ${fmtBytes(s.total_bytes)}</div>
+    ${restoreWarn}
+    <section class="sgroup"><h3>Salinan tersedia</h3>
+      ${items.length ? items.map(b => `
+        <div class="bkrow">
+          <span class="tag ${b.pre_restore ? '' : 'auto'}">${b.pre_restore ? 'pra-pulih' : 'snapshot'}</span>
+          <span class="nm">${esc(b.name)}<small>${esc(b.modified)} · ${fmtBytes(b.size)}</small></span>
+          <button class="iconbtn" data-dl="${esc(b.name)}">Unduh</button>
+          ${s.restore_available ? `<button class="iconbtn" data-restore="${esc(b.name)}">Pulihkan</button>` : ''}
+          <button class="iconbtn" data-del="${esc(b.name)}">Hapus</button>
+        </div>`).join('')
+        : '<div class="bkempty">Belum ada backup. Tekan "Buat backup sekarang".</div>'}
+    </section>
+    <section class="sgroup"><h3>Pulihkan dari berkas</h3>
+      <div class="dropzone" id="bkDrop">
+        Klik atau seret berkas <code>.db</code> ke sini<br>
+        <small style="color:var(--dim)">Berkas diperiksa dulu; tidak ada yang berubah sampai Anda mengonfirmasi</small>
+      </div>
+      <input type="file" id="bkFile" accept=".db" style="display:none">
+    </section>`;
+
+  $('#bkBody').querySelectorAll('[data-dl]').forEach(b => b.onclick = () =>
+    download('/api/v1/backups/' + encodeURIComponent(b.dataset.dl)));
+  $('#bkBody').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if(!confirm(`Hapus ${b.dataset.del}?`)) return;
+    await api('/api/v1/backups/' + encodeURIComponent(b.dataset.del), {method:'DELETE'});
+    toast('Backup dihapus.'); openBackups();
+  });
+  $('#bkBody').querySelectorAll('[data-restore]').forEach(b =>
+    b.onclick = () => restoreFromServer(b.dataset.restore));
+
+  const dz = $('#bkDrop'), fi = $('#bkFile');
+  dz.onclick = () => fi.click();
+  fi.onchange = () => fi.files[0] && inspectUpload(fi.files[0]);
+  ['dragenter','dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove('over'); }));
+  dz.addEventListener('drop', e => {
+    const f = e.dataTransfer.files[0]; if(f) inspectUpload(f); });
+}
+
+// FormData tidak dikirim lewat api(): helper itu memasang
+// Content-Type: application/json, yang merusak batas multipart.
+async function postForm(url, fd){
+  const r = await fetch(url, {method:'POST', body:fd, credentials:'same-origin'});
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
+}
+
+async function inspectUpload(file){
+  $('#bkErr').textContent = '';
+  toast('Memeriksa berkas…');
+  const fd = new FormData(); fd.append('file', file);
+  let info;
+  try{ info = await postForm('/api/v1/backups/inspect', fd); }
+  catch(err){ $('#bkErr').textContent = err.message; return; }
+
+  if(!info.valid){
+    $('#bkErr').textContent = 'Berkas ditolak: ' + info.error;
+    return;
+  }
+  if(!confirm(`Pulihkan database dari ${file.name}?\n\n`
+    + `Berkas berisi : ${info.indicators} indikator, ${info.audit_entries || 0} entri audit\n\n`
+    + `SELURUH data saat ini akan diganti. Snapshot pengaman dibuat otomatis lebih dulu, `
+    + `dan service akan restart.`)) return;
+
+  const pw = prompt('Ketik password dashboard untuk mengonfirmasi pemulihan:');
+  if(!pw) return;
+
+  const fd2 = new FormData();
+  fd2.append('file', file); fd2.append('confirm_password', pw);
+  try{
+    toast('Memulihkan — jangan tutup halaman ini.');
+    const r = await postForm('/api/v1/backups/restore-upload', fd2);
+    alert(r.message);
+    setTimeout(() => location.reload(), 6000);
+  }catch(err){ $('#bkErr').textContent = err.message; }
+}
+
+async function restoreFromServer(name){
+  $('#bkErr').textContent = '';
+  if(!confirm(`Pulihkan database dari ${name}?\n\n`
+    + `SELURUH data saat ini akan diganti. Snapshot pengaman dibuat otomatis lebih dulu, `
+    + `dan service akan restart.`)) return;
+  const pw = prompt('Ketik password dashboard untuk mengonfirmasi pemulihan:');
+  if(!pw) return;
+  try{
+    toast('Memulihkan — jangan tutup halaman ini.');
+    const r = await api('/api/v1/backups/restore',
+      {method:'POST', body:JSON.stringify({name, confirm_password:pw})});
+    alert(r.message);
+    setTimeout(() => location.reload(), 6000);
+  }catch(err){ $('#bkErr').textContent = err.message; }
+}
+
+$('#btnBackups').onclick = openBackups;
+$('#btnCloseBk').onclick = () => $('#bkdrawer').classList.remove('on');
+$('#bkdrawer').onclick = e => { if(e.target.id === 'bkdrawer') $('#bkdrawer').classList.remove('on'); };
+$('#btnMakeBackup').onclick = async () => {
+  $('#btnMakeBackup').disabled = true;
+  try{
+    const r = await api('/api/v1/backups', {method:'POST'});
+    toast(`Backup dibuat: ${r.name} (${fmtBytes(r.size)}).`);
+    openBackups();
+  }catch(err){ $('#bkErr').textContent = err.message; }
+  finally{ $('#btnMakeBackup').disabled = false; }
 };
 
 /* ------------------------------------------------------------------ ekspor */

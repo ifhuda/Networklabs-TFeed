@@ -129,9 +129,11 @@ if [[ $MODE == uninstall ]]; then
   fi
   systemctl disable --now threatfeed 2>/dev/null || true
   systemctl disable --now threatfeed-apply-env.path 2>/dev/null || true
+  systemctl disable --now threatfeed-restore-db.path 2>/dev/null || true
   rm -f "$UNIT" "$CTL" /etc/sudoers.d/threatfeed \
         /etc/systemd/system/threatfeed-apply-env.{path,service} \
-        /usr/local/sbin/threatfeed-apply-env
+        /etc/systemd/system/threatfeed-restore-db.{path,service} \
+        /usr/local/sbin/threatfeed-apply-env /usr/local/sbin/threatfeed-restore-db
   systemctl daemon-reload
   rm -f /etc/nginx/sites-enabled/threatfeed.conf /etc/nginx/sites-available/threatfeed.conf
   systemctl reload nginx 2>/dev/null || true
@@ -557,10 +559,26 @@ if [[ $ENV_EDITOR -eq 1 ]]; then
     /etc/systemd/system/threatfeed-apply-env.service
   install -m 644 -o root -g root "$SRC_DIR/deploy/threatfeed-apply-env.path" \
     /etc/systemd/system/threatfeed-apply-env.path
+  # Helper pemulihan database memakai pola yang sama: aplikasi menuliskan berkas
+  # kandidat, systemd menjalankan helper sebagai root. Menukar berkas database
+  # harus dilakukan dengan service berhenti, dan aplikasi tidak boleh punya hak
+  # untuk menghentikan dirinya sendiri.
+  install -m 750 -o root -g root "$SRC_DIR/deploy/threatfeed-restore-db" \
+    /usr/local/sbin/threatfeed-restore-db
+  install -m 644 -o root -g root "$SRC_DIR/deploy/threatfeed-restore-db.service" \
+    /etc/systemd/system/threatfeed-restore-db.service
+  install -m 644 -o root -g root "$SRC_DIR/deploy/threatfeed-restore-db.path" \
+    /etc/systemd/system/threatfeed-restore-db.path
   systemctl daemon-reload
   systemctl enable --now threatfeed-apply-env.path >/dev/null 2>&1
+  systemctl enable --now threatfeed-restore-db.path >/dev/null 2>&1
   # Aturan sudoers lama dari versi sebelumnya tidak lagi dipakai dan dibuang.
   rm -f /etc/sudoers.d/threatfeed
+  if systemctl is-active --quiet threatfeed-restore-db.path; then
+    ok "Helper pemulihan database aktif — tombol Pulihkan di dashboard siap"
+  else
+    warn "threatfeed-restore-db.path tidak aktif. Cek: systemctl status threatfeed-restore-db.path"
+  fi
   if systemctl is-active --quiet threatfeed-apply-env.path; then
     ok "Helper root aktif lewat systemd path unit — halaman Konfigurasi Sistem siap"
   else

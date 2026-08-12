@@ -285,6 +285,25 @@ SCHEMA: dict[str, dict] = {
         group="Retensi & Default Entri", label="Retensi jejak audit (hari)", kind="int",
         validate=v_int(1, 3650), default="90",
         help="Entri audit lebih tua dari ini dipangkas saat pruning."),
+    "TF_BACKUP_ENABLED": dict(
+        group="Backup & Pemulihan", label="Backup otomatis", kind="bool",
+        validate=v_bool, default="true",
+        help="Service membuat snapshot database sendiri sesuai jadwal di bawah."),
+    "TF_BACKUP_INTERVAL_HOURS": dict(
+        group="Backup & Pemulihan", label="Interval backup (jam)", kind="int",
+        validate=v_int(1, 8760), default="24",
+        help="Jarak antar snapshot. Dihitung dari backup terakhir, bukan dari jam service start."),
+    "TF_BACKUP_KEEP": dict(
+        group="Backup & Pemulihan", label="Jumlah backup disimpan", kind="int",
+        validate=v_int(1, 500), default="14",
+        help="Snapshot terlama dibuang setelah melewati jumlah ini. "
+             "Salinan pre-restore dikecualikan dan tidak pernah dibuang otomatis."),
+    "TF_BACKUP_DIR": dict(
+        group="Backup & Pemulihan", label="Direktori backup", kind="text",
+        validate=v_path, default="/var/lib/threatfeed/backups",
+        help="Harus dapat ditulis akun service. Unit systemd hanya mengizinkan "
+             "penulisan di /var/lib/threatfeed — path lain perlu ReadWritePaths tambahan.",
+        danger="Mengubah path tidak memindahkan backup lama."),
     "TF_DEFAULT_TYPE": dict(
         group="Retensi & Default Entri", label="Type", kind="text",
         validate=v_text(64, allow_empty=False), default="IP Address",
@@ -310,7 +329,7 @@ SCHEMA: dict[str, dict] = {
 }
 
 GROUP_ORDER = ["Identitas & Storage", "Kredensial & Keamanan", "Kebijakan Feed",
-               "Kontrol Akses Jaringan", "Retensi & Default Entri"]
+               "Kontrol Akses Jaringan", "Backup & Pemulihan", "Retensi & Default Entri"]
 
 # Perubahan yang membuat operator berpotensi mengunci diri sendiri.
 LOCKOUT_KEYS = {"TF_ADMIN_PASSWORD", "TF_SECRET_KEY", "TF_COOKIE_SECURE", "TF_DB_PATH"}
