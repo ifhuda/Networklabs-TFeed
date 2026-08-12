@@ -1,0 +1,103 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║  IoC-WATCH Threat Feed Server — mulai di sini                            ║
+║  FortiSOAR  ──▶  database  ──▶  FortiGate External Resource              ║
+║  Native systemd. Tanpa Docker, tanpa container runtime.                  ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+TIGA PERINTAH DARI VM KOSONG
+────────────────────────────────────────────────────────────────────────────
+  unzip threatfeed.zip
+  cd threatfeed
+  sudo bash deploy/setup.sh
+
+Wizard menanyakan lima hal, lalu mengerjakan sisanya sendiri: paket sistem,
+service account, virtualenv, database, kredensial acak, unit systemd,
+nginx + TLS, aturan firewall, uji fungsional, dan perintah `threatfeedctl`.
+Durasi 2-4 menit.
+
+Di akhir tercetak password dashboard, dua token, dan blok
+`config system external-resource` yang tinggal ditempel ke FortiGate.
+CATAT SAAT ITU JUGA — atau baca ulang kapan saja dengan:
+  sudo threatfeedctl creds
+
+
+SEBELUM MULAI, SIAPKAN TIGA NILAI
+────────────────────────────────────────────────────────────────────────────
+  1. Nama host / domain server ini      contoh: feed.networklabs.id
+  2. IP FortiSOAR yang boleh push       contoh: 10.10.10.20
+  3. IP/subnet FortiGate penarik feed   contoh: 10.10.10.0/24
+
+  Untuk nomor 1, pakai ALAMAT IP kalau FortiGate tidak bisa me-resolve nama
+  host server ini. Wizard sudah memakai IP utama sebagai default.
+
+Pastikan juga jam server benar — TTL 30 hari bergantung padanya:
+  sudo timedatectl set-timezone Asia/Jakarta && timedatectl
+
+
+MODE NON-INTERAKTIF (Ansible / instalasi berulang)
+────────────────────────────────────────────────────────────────────────────
+  sudo bash deploy/setup.sh --yes \
+    --domain feed.networklabs.id \
+    --soar-ip 10.10.10.20 \
+    --fgt-ip 10.10.10.0/24 \
+    --ttl 30 \
+    --tls self-signed
+
+  Flag lain:  --tls existing --cert <file> --key <file>
+              --comments                  (sertakan komentar di feed FortiGate)
+              --comment-format plain|short|full
+              --tls none / --no-nginx     (uvicorn saja di 127.0.0.1)
+              --port 8080                 (port internal)
+              --upgrade                   (perbarui kode; DB & kredensial aman)
+              --uninstall                 (copot bersih)
+
+
+SETELAH TERPASANG
+────────────────────────────────────────────────────────────────────────────
+  sudo threatfeedctl doctor     periksa 10 titik kegagalan tersering
+  sudo threatfeedctl status     service + database + jumlah entri feed
+  sudo threatfeedctl creds      URL, password dashboard, kedua token
+  sudo threatfeedctl feed 25    intip persis apa yang dilihat FortiGate
+  sudo threatfeedctl test <IP>  push satu IoC uji
+  sudo threatfeedctl backup     backup aman saat service hidup
+
+  Hampir semua perintah butuh sudo: /etc/threatfeed bermode 750 karena
+  berisi token. Ringkasan instalasi ada di
+  /etc/threatfeed/INSTALL-SUMMARY.txt
+
+
+ISI ARSIP
+────────────────────────────────────────────────────────────────────────────
+  app/                  Backend FastAPI
+    config.py           Konfigurasi dari environment
+    database.py         SQLite WAL, skema, helper transaksi
+    normalize.py        Parser payload FortiSOAR + normalisasi IP/TLP/severity
+    security.py         Bearer/Basic token, cookie sesi HMAC, allowlist CIDR
+    crud.py             Upsert-dedup, generator feed, pruning TTL, audit
+    main.py             Endpoint API + scheduler pruning
+  static/index.html     Dashboard SPA (tanpa CDN — aman untuk SOC terisolasi)
+  deploy/
+    setup.sh            Installer wizard  ← JALANKAN INI
+    threatfeedctl       Perintah operasional harian
+    install.sh          Versi minimal tanpa nginx/wizard
+    threatfeed.service  Unit systemd (hardened)
+    nginx-threatfeed.conf
+    threatfeed.env.example
+  tests/smoke.sh        15 skenario uji end-to-end
+  README.md             Dokumentasi lengkap: arsitektur, API, FortiGate,
+                        FortiSOAR, operasional, troubleshooting
+  PRODUCTION-CHECKLIST.md  Runbook penerapan produksi
+
+
+UNTUK SERVER PRODUKSI
+────────────────────────────────────────────────────────────────────────────
+  Ikuti PRODUCTION-CHECKLIST.md — urutan langkah dengan titik verifikasi,
+  pengerasan setelah jalan, dan prosedur upgrade.
+
+
+DOKUMENTASI LENGKAP
+────────────────────────────────────────────────────────────────────────────
+  README.md bagian 2  instalasi          bagian 6  fitur operasional
+            bagian 3  FortiSOAR          bagian 7  referensi endpoint
+            bagian 4  FortiGate          bagian 8  troubleshooting
+            bagian 5  dashboard          bagian 9  uji fungsional

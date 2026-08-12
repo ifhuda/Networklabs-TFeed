@@ -1,0 +1,19 @@
+# /etc/sudoers.d/threatfeed          mode 0440, milik root:root
+#
+# Pasang dengan (visudo -c wajib, sudoers rusak mengunci sudo di seluruh sistem):
+#     sudo install -m 440 -o root -g root deploy/sudoers-threatfeed /etc/sudoers.d/threatfeed
+#     sudo visudo -c
+#
+# Satu perintah, tanpa argumen, tanpa password. Skrip itulah yang memvalidasi
+# ulang berkas kandidat dan memasangnya — akun service tidak pernah diberi izin
+# tulis ke /etc/threatfeed maupun akses ke `systemctl` secara umum.
+#
+# JANGAN diganti dengan pola seperti:
+#     threatfeed ALL=(root) NOPASSWD: /bin/systemctl restart threatfeed
+# systemctl menerima argumen, dan mengizinkan satu subperintah tanpa pembatasan
+# argumen yang ketat memperluas permukaan serangan jauh melebihi kebutuhan.
+
+Defaults:threatfeed !requiretty
+Defaults:threatfeed env_reset
+
+threatfeed ALL=(root) NOPASSWD: /usr/local/sbin/threatfeed-apply-env ""
