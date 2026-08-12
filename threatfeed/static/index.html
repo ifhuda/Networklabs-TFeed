@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IoC-WATCH · Threat Feed Console</title>
+<style>
+/* ============================================================ design tokens
+   Palet diturunkan dari domainnya sendiri: warna TLP resmi adalah satu-satunya
+   warna "keras" di layar. Chrome UI memakai slate-tinta + satu aksen teal
+   telemetri, supaya badge TLP tetap menjadi elemen paling nyaring.
+   Tanpa CDN sama sekali — aman untuk SOC yang terisolasi dari internet.      */
+:root{
+  --bg:#0B1017; --surface:#121A24; --surface-2:#182231; --surface-3:#1E2A3A;
+  --line:#22303F; --line-soft:#1A2431;
+  --text:#DCE5EE; --muted:#7A8CA0; --dim:#4E5F72;
+  --accent:#35D0C3; --accent-dim:#1B6F6A;
+  --tlp-red:#E5484D; --tlp-amber:#F5A524; --tlp-green:#30A46C; --tlp-white:#E6EAEF;
+  --heat-5:#E5484D; --heat-4:#F76808; --heat-3:#F5A524; --heat-2:#5B8DEF; --heat-1:#5E6E80;
+  --mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --r:4px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--sans);
+  font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--accent-dim);color:#fff}
+a{color:var(--accent);text-decoration:none}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.eyebrow{
+  font-size:10px; letter-spacing:.18em; text-transform:uppercase;
+  color:var(--dim); font-weight:600;
+}
+.wrap{max-width:1560px;margin:0 auto;padding:0 20px 64px}
+
+/* ==================================================================== header */
+header{
+  border-bottom:1px solid var(--line); background:linear-gradient(180deg,#0F1620,#0B1017);
+  position:sticky; top:0; z-index:30;
+}
+.hdr{max-width:1560px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:18px}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand b{font-size:19px;font-weight:800;letter-spacing:-.02em}
+.brand b span{color:var(--accent)}
+.brand small{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+.spacer{flex:1}
+.pill{
+  display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:99px;
+  border:1px solid var(--line);background:var(--surface);font-size:11px;color:var(--muted);
+  font-family:var(--mono);
+}
+.dot{width:7px;height:7px;border-radius:99px;background:var(--accent);box-shadow:0 0 0 0 var(--accent);animation:pulse 2.6s infinite}
+.dot.stale{background:var(--tlp-amber);animation:none}
+.dot.down{background:var(--tlp-red);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(53,208,195,.45)}70%{box-shadow:0 0 0 7px rgba(53,208,195,0)}100%{box-shadow:0 0 0 0 rgba(53,208,195,0)}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}*{transition:none!important}}
+
+.btn{
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:7px 13px;font-size:12px;cursor:pointer;transition:background .15s,border-color .15s;
+}
+.btn:hover{background:var(--surface-3);border-color:var(--dim)}
+.btn.primary{background:var(--accent);color:#04201E;border-color:var(--accent);font-weight:700}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent}
+
+/* ========================================================= signature: decay */
+.decay{
+  border:1px solid var(--line);border-radius:var(--r);background:var(--surface);
+  margin:20px 0 18px;padding:14px 16px 11px;
+}
+.decay-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:11px}
+.decay-head h2{margin:0;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.decay-head .note{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.track{
+  display:flex;align-items:flex-end;gap:1px;height:56px;position:relative;
+  border-bottom:1px solid var(--line);
+}
+.tick{flex:1;min-width:2px;display:flex;flex-direction:column-reverse;border-radius:1px 1px 0 0;opacity:.9}
+.tick i{display:block;width:100%}
+.tick:hover{outline:1px solid var(--accent);outline-offset:1px}
+.cliff{position:absolute;top:-4px;bottom:-1px;width:0;border-left:1px dashed var(--tlp-red)}
+.cliff::after{
+  content:attr(data-label);position:absolute;top:-6px;left:6px;white-space:nowrap;
+  font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--tlp-red);font-weight:700;
+}
+.axis{display:flex;justify-content:space-between;margin-top:5px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+/* ===================================================================== stats */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin-bottom:18px}
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:14px 16px}
+.card .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.card .v{font-family:var(--mono);font-size:27px;font-weight:600;letter-spacing:-.02em;margin:6px 0 2px}
+.card .s{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.card .v.small{font-size:16px;line-height:1.7}
+
+/* =================================================================== toolbar */
+.toolbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.search{position:relative;flex:1;min-width:250px}
+.search input{
+  width:100%;padding:9px 12px 9px 32px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r);font-family:var(--mono);font-size:13px;
+}
+.search input::placeholder{color:var(--dim)}
+.search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);opacity:.45}
+select{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  padding:9px 10px;font-size:12px;min-width:120px;
+}
+
+/* ===================================================================== table */
+.tablewrap{border:1px solid var(--line);border-radius:var(--r);overflow-x:auto;background:var(--surface)}
+table{width:100%;border-collapse:collapse;min-width:960px}
+thead th{
+  position:sticky;top:0;background:var(--surface-2);text-align:left;padding:9px 14px;
+  font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+  font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none;
+}
+thead th:hover{color:var(--text)}
+thead th.static{cursor:default}
+thead th .arrow{color:var(--accent);font-size:9px}
+tbody td{padding:10px 14px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+tbody tr:hover{background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:0}
+.ip{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.ip.inactive{color:var(--dim);text-decoration:line-through}
+.type{font-size:12px;color:var(--text)}
+.meta{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.comment{font-size:12px;color:var(--muted);max-width:400px}
+
+/* severity = heat bar (lebar = confidence) ; TLP = badge resmi */
+.heat{display:flex;align-items:center;gap:8px;min-width:132px}
+.heat .bar{flex:1;height:5px;background:var(--surface-3);border-radius:99px;overflow:hidden}
+.heat .bar i{display:block;height:100%;border-radius:99px}
+.heat .lbl{font-size:11px;font-family:var(--mono);white-space:nowrap;min-width:74px}
+.badge{
+  display:inline-block;padding:2px 7px;border-radius:2px;font-size:10px;font-weight:700;
+  letter-spacing:.08em;font-family:var(--mono);border:1px solid;white-space:nowrap;
+}
+.tlp-red{color:var(--tlp-red);border-color:var(--tlp-red);background:rgba(229,72,77,.1)}
+.tlp-amber{color:var(--tlp-amber);border-color:var(--tlp-amber);background:rgba(245,165,36,.1)}
+.tlp-green{color:var(--tlp-green);border-color:var(--tlp-green);background:rgba(48,163,108,.1)}
+.tlp-white{color:var(--tlp-white);border-color:#54606D;background:rgba(230,234,239,.07)}
+.st{font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+.st.active{color:var(--tlp-green)} .st.expired{color:var(--tlp-amber)} .st.revoked{color:var(--dim)}
+.rowdel{background:none;border:0;color:var(--dim);cursor:pointer;padding:2px 6px;border-radius:3px}
+.rowdel:hover{color:var(--tlp-red);background:rgba(229,72,77,.1)}
+
+.foot{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+.foot .meta{flex:1}
+.empty{padding:56px 20px;text-align:center;color:var(--muted)}
+.empty b{display:block;color:var(--text);margin-bottom:6px;font-size:15px}
+
+/* ==================================================================== audit */
+.audit{margin-top:22px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+.audit summary{padding:11px 16px;cursor:pointer;font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--muted)}
+.audit summary:hover{color:var(--text)}
+.audit .body{border-top:1px solid var(--line);max-height:340px;overflow:auto}
+.audit table{min-width:820px}
+.audit td{font-family:var(--mono);font-size:11px;padding:7px 14px}
+
+/* ================================================================= settings */
+.drawer{
+  position:fixed;inset:0;background:rgba(11,16,23,.72);z-index:80;display:none;
+}
+.drawer.on{display:block}
+.drawer .panel{
+  position:absolute;top:0;right:0;bottom:0;width:min(560px,100%);
+  background:var(--surface);border-left:1px solid var(--line);
+  display:flex;flex-direction:column;
+}
+.drawer .head{
+  padding:16px 20px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:12px;
+}
+.drawer .head h2{margin:0;font-size:15px;font-weight:700;letter-spacing:-.01em}
+.drawer .body{flex:1;overflow-y:auto;padding:4px 20px 20px}
+.drawer .foot{
+  padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:9px;align-items:center;
+}
+.sgroup{margin-top:22px}
+.sgroup > h3{
+  margin:0 0 10px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);font-weight:600;
+}
+.field{padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.field:last-child{border-bottom:0}
+.field .row{display:flex;align-items:center;gap:12px}
+.field label{flex:1;font-size:13px}
+.field .src{
+  font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  padding:2px 6px;border-radius:2px;border:1px solid var(--line);color:var(--dim);
+}
+.field .src.dashboard{color:var(--accent);border-color:var(--accent-dim)}
+/* --- halaman System Configuration (editor .env) --------------------------- */
+.field .src.file{color:var(--tlp-amber);border-color:var(--tlp-amber)}
+.field .help{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
+.field .danger{
+  font-size:11px;color:var(--tlp-amber);margin-top:5px;line-height:1.5;
+  padding-left:9px;border-left:2px solid var(--tlp-amber);
+}
+.field .ferr{font-size:11px;color:var(--tlp-red);margin-top:5px;min-height:0}
+.field.bad input,.field.bad select{border-color:var(--tlp-red)}
+.inputrow{display:flex;gap:6px;align-items:center;margin-top:7px}
+.inputrow input,.inputrow select{flex:1;min-width:0}
+.iconbtn{
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:7px 9px;cursor:pointer;font-size:11px;color:var(--muted);white-space:nowrap;
+}
+.iconbtn:hover{background:var(--surface-3);color:var(--text)}
+.notice{
+  border:1px solid var(--line);border-left:3px solid var(--tlp-amber);
+  background:var(--surface-2);border-radius:var(--r);padding:11px 13px;
+  font-size:12px;color:var(--muted);line-height:1.55;margin:14px 0 4px;
+}
+.notice b{color:var(--text)}
+.notice.off{border-left-color:var(--tlp-red)}
+.confirm{
+  border-top:1px solid var(--line);margin-top:18px;padding-top:14px;
+}
+.confirm label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+.confirm input{width:100%}
+.chg{font-size:11px;color:var(--accent);font-family:var(--mono)}
+/* --- generator snippet CLI FortiGate ------------------------------------- */
+.snipbox{margin:16px 0 4px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2)}
+.snipbox > header{
+  padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.snipbox > header h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.snipbox .opts{display:flex;gap:7px;flex-wrap:wrap;padding:11px 14px;border-bottom:1px solid var(--line)}
+.snipbox .opts input,.snipbox .opts select{
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:6px 8px;font-size:11px;
+}
+.snipbox .opts input{width:150px}
+.snipbox pre{
+  margin:0;padding:13px 14px;font-family:var(--mono);font-size:11.5px;line-height:1.6;
+  white-space:pre;overflow-x:auto;color:var(--text);
+}
+.snipbox .acts{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.snipnote{
+  font-size:11px;color:var(--tlp-amber);padding:0 14px 11px;line-height:1.55;
+}
+.snipnote div{padding-left:9px;border-left:2px solid var(--tlp-amber);margin-top:7px}
+
+/* --- menu ekspor ---------------------------------------------------------- */
+.menuwrap{position:relative}
+.menu{
+  position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:260px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:6px;display:none;box-shadow:0 12px 32px rgba(0,0,0,.45);
+}
+.menu.on{display:block}
+.menu button{
+  display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;
+  padding:8px 10px;border-radius:3px;font-size:12px;color:var(--text);
+}
+.menu button:hover{background:var(--surface-3)}
+.menu button small{display:block;color:var(--muted);font-size:10.5px;margin-top:2px}
+.menu hr{border:0;border-top:1px solid var(--line);margin:5px 0}
+.menu .lbl{
+  font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  font-weight:600;padding:7px 10px 4px;
+}
+.field input,.field select{
+  width:190px;padding:6px 9px;background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r);font-family:var(--mono);font-size:12px;
+}
+.field input.wide{width:100%;margin-top:8px}
+.field .help{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
+.field.changed{background:rgba(53,208,195,.05);margin:0 -10px;padding-left:10px;padding-right:10px;border-radius:var(--r)}
+.field .warn{font-size:11px;color:var(--tlp-amber);margin-top:5px}
+.toggle{
+  position:relative;width:40px;height:22px;border-radius:99px;background:var(--surface-3);
+  border:1px solid var(--line);cursor:pointer;flex:none;transition:background .15s;
+}
+.toggle::after{
+  content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:99px;
+  background:var(--dim);transition:transform .15s,background .15s;
+}
+.toggle.on{background:var(--accent-dim);border-color:var(--accent)}
+.toggle.on::after{transform:translateX(18px);background:var(--accent)}
+.serr{color:var(--tlp-red);font-size:12px;flex:1}
+
+/* ==================================================================== login */
+.gate{position:fixed;inset:0;background:rgba(11,16,23,.94);display:none;place-items:center;z-index:99}
+.gate.on{display:grid}
+.gate form{
+  width:340px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);
+  padding:26px;
+}
+.gate h1{margin:0 0 4px;font-size:18px;font-weight:800;letter-spacing:-.02em}
+.gate p{margin:0 0 18px;font-size:12px;color:var(--muted)}
+.gate input{
+  width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r);font-family:var(--mono);margin-bottom:11px;
+}
+.err{color:var(--tlp-red);font-size:12px;min-height:17px;margin-bottom:6px}
+.toast{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:120;
+  background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r);
+  padding:10px 16px;font-size:12px;opacity:0;pointer-events:none;transition:opacity .2s
+}
+.toast.on{opacity:1}
+@media (max-width:640px){.hdr{flex-wrap:wrap;gap:10px}.wrap{padding:0 12px 40px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr">
+    <div class="brand">
+      <b>IoC<span>·</span>WATCH</b>
+      <small>Threat Feed Console</small>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill"><span class="dot" id="healthDot"></span><span id="healthTxt">menghubungkan…</span></span>
+    <button class="btn ghost" id="btnSettings">Pengaturan</button>
+    <button class="btn ghost" id="btnSysConfig">Konfigurasi Sistem</button>
+    <button class="btn ghost" id="btnRefresh">Muat ulang</button>
+    <button class="btn ghost" id="btnPrune">Jalankan pruning</button>
+    <button class="btn ghost" id="btnLogout">Keluar</button>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- SIGNATURE: strip peluruhan TTL -->
+  <section class="decay">
+    <div class="decay-head">
+      <h2>Peluruhan TTL</h2>
+      <span class="note" id="decayNote">—</span>
+      <div class="spacer"></div>
+      <span class="eyebrow">Tiap batang = 1 hari sejak pembaruan terakhir · warna = severity</span>
+    </div>
+    <div class="track" id="track"></div>
+    <div class="axis"><span>hari ini</span><span id="axisMid">—</span><span id="axisEnd">—</span></div>
+  </section>
+
+  <section class="stats" id="stats"></section>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Cari IP, tipe, TLP, sumber, atau komentar…" autocomplete="off">
+    </div>
+    <select id="fSeverity"><option value="">Semua severity</option></select>
+    <select id="fTlp"><option value="">Semua TLP</option></select>
+    <select id="fType"><option value="">Semua tipe</option></select>
+    <select id="fSource"><option value="">Semua sumber</option></select>
+    <select id="fStatus">
+      <option value="">Semua status</option>
+      <option value="active">Aktif</option>
+      <option value="expired">Kedaluwarsa</option>
+      <option value="revoked">Dicabut</option>
+    </select>
+    <select id="fSize"><option>50</option><option>100</option><option>250</option><option>500</option></select>
+    <button class="btn ghost" id="btnClear">Bersihkan filter</button>
+    <div class="menuwrap">
+      <button class="btn ghost" id="btnExport">Ekspor ▾</button>
+      <div class="menu" id="exportMenu">
+        <div class="lbl">Indikator — mengikuti filter aktif</div>
+        <button data-export="csv">Unduh CSV<small id="expCount">…</small></button>
+        <button data-export="json">Unduh JSON<small>Struktur penuh, untuk diproses ulang</small></button>
+        <hr>
+        <div class="lbl">Jejak audit</div>
+        <button data-audit="csv">Audit CSV<small>5.000 peristiwa terakhir</small></button>
+        <button data-audit="json">Audit JSON<small>5.000 peristiwa terakhir</small></button>
+        <hr>
+        <div class="lbl">Database</div>
+        <button data-backup="1">Backup penuh (.db)<small>Snapshot konsisten — memuat seluruh isi database</small></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th data-sort="ip_address">IP Address</th>
+        <th data-sort="type">Type</th>
+        <th data-sort="severity">Severity / Conf.</th>
+        <th data-sort="tlp">TLP</th>
+        <th data-sort="updated_at">Last Updated</th>
+        <th data-sort="source">Source</th>
+        <th class="static">Comment</th>
+        <th class="static"></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden></div>
+  </div>
+
+  <div class="foot">
+    <span class="meta" id="pageInfo">—</span>
+    <button class="btn" id="prev">← Sebelumnya</button>
+    <button class="btn" id="next">Berikutnya →</button>
+  </div>
+
+  <details class="audit">
+    <summary>Jejak audit</summary>
+    <div class="body">
+      <table><tbody id="auditRows"></tbody></table>
+    </div>
+  </details>
+</div>
+
+<div class="drawer" id="drawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Pengaturan</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseSettings">Tutup</button>
+    </div>
+    <div class="body" id="settingsBody"></div>
+    <div class="foot">
+      <span class="serr" id="settingsErr"></span>
+      <button class="btn ghost" id="btnResetSettings">Kembalikan ke .env</button>
+      <button class="btn primary" id="btnSaveSettings">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<div class="drawer" id="sysdrawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Konfigurasi Sistem</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseSys">Tutup</button>
+    </div>
+    <div class="body" id="sysBody"></div>
+    <div class="foot">
+      <span class="serr" id="sysErr"></span>
+      <span class="chg" id="sysChanged"></span>
+      <button class="btn primary" id="btnSaveSys">Simpan &amp; Terapkan</button>
+    </div>
+  </div>
+</div>
+
+<div class="gate" id="gate">
+  <form id="loginForm">
+    <h1>IoC·WATCH</h1>
+    <p>Masuk untuk melihat konsol threat feed.</p>
+    <input id="pw" type="password" placeholder="Password dashboard" autocomplete="current-password">
+    <div class="err" id="loginErr"></div>
+    <button class="btn primary" type="submit" style="width:100%">Masuk</button>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { page:1, size:50, sort:'updated_at', order:'desc', filtersLoaded:false };
+
+/* ------------------------------------------------------------------ helpers */
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('on'),2600); }
+
+function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>(
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function ago(iso){
+  if(!iso) return '—';
+  const d=(Date.now()-new Date(iso.replace(' ','T')).getTime())/1000;
+  if(d<60) return 'baru saja';
+  if(d<3600) return Math.floor(d/60)+' mnt lalu';
+  if(d<86400) return Math.floor(d/3600)+' jam lalu';
+  return Math.floor(d/86400)+' hari lalu';
+}
+const heatOf = s => ({Malicious:'var(--heat-5)',Critical:'var(--heat-4)',High:'var(--heat-3)',
+  Medium:'var(--heat-2)'}[s] || 'var(--heat-1)');
+const tlpClass = t => 'tlp-'+((String(t).split(':')[1]||'white').split('+')[0].toLowerCase());
+
+async function api(path, opts={}){
+  const r = await fetch(path, {credentials:'same-origin',
+    headers:{'Content-Type':'application/json'}, ...opts});
+  if(r.status===401){ $('#gate').classList.add('on'); throw new Error('unauth'); }
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+  return r.status===204 ? null : r.json();
+}
+
+/* -------------------------------------------------------------------- login */
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('#loginErr').textContent='';
+  try{
+    await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({password:$('#pw').value})});
+    $('#gate').classList.remove('on'); $('#pw').value=''; boot();
+  }catch(err){ $('#loginErr').textContent = 'Password salah. Coba lagi.'; }
+});
+$('#btnLogout').onclick = async () => {
+  await fetch('/api/v1/auth/logout',{method:'POST',credentials:'same-origin'});
+  $('#gate').classList.add('on');
+};
+
+/* -------------------------------------------------------------------- stats */
+function renderStats(s){
+  const li = s.last_ingest, lp = s.last_pull;
+  const staleH = li ? (Date.now()-new Date(li.ts).getTime())/36e5 : 999;
+  const dot=$('#healthDot');
+  dot.className = 'dot' + (staleH>24 ? ' down' : staleH>6 ? ' stale' : '');
+  $('#healthTxt').textContent = li ? `ingest terakhir ${ago(li.ts)}` : 'belum ada ingest';
+
+  $('#stats').innerHTML = [
+    ['Total IP terdeteksi', s.total.toLocaleString('id-ID'),
+     `${s.active.toLocaleString('id-ID')} aktif · +${s.added_24h} dalam 24 jam`],
+    ['Disajikan ke FortiGate', s.in_feed.toLocaleString('id-ID'),
+     `TTL ${s.ttl_days} hari · ${s.expired.toLocaleString('id-ID')} kedaluwarsa`],
+    ['Sinkronisasi terakhir', li ? ago(li.ts) : '—',
+     li ? `${li.entries_ok} entri dari ${esc(li.client_ip)}` : 'menunggu push FortiSOAR', 1],
+    ['Tarikan FortiGate', lp ? ago(lp.ts) : '—',
+     `${s.pulls_24h} tarikan dalam 24 jam`, 1],
+  ].map(([k,v,sub,small])=>`<div class="card"><div class="k">${k}</div>
+      <div class="v${small?' small':''}">${esc(v)}</div><div class="s">${sub}</div></div>`).join('');
+
+  renderDecay(s.age_buckets||[], s.ttl_days);
+  fillFilter('#fSource', s.sources.map(x=>x.k));
+}
+
+function renderDecay(buckets, ttl){
+  const span = Math.max(ttl, 1);
+  const days = Array.from({length:span+1}, ()=>({total:0, sev:{}}));
+  let over = 0, max = 1;
+  for(const b of buckets){
+    if(b.age > span){ over += b.count; continue; }
+    const d = days[b.age];
+    d.total += b.count; d.sev[b.severity] = (d.sev[b.severity]||0) + b.count;
+    if(d.total > max) max = d.total;
+  }
+  $('#track').innerHTML = days.map((d,i)=>{
+    const h = d.total ? Math.max(3, Math.round(d.total/max*54)) : 0;
+    const segs = Object.entries(d.sev).sort((a,b)=>b[1]-a[1]).map(([sev,c])=>
+      `<i style="height:${Math.max(1,Math.round(c/d.total*h))}px;background:${heatOf(sev)}"></i>`).join('');
+    return `<span class="tick" style="height:${h}px" title="Umur ${i} hari · ${d.total} indikator">${segs}</span>`;
+  }).join('') + `<span class="cliff" data-label="tebing kedaluwarsa" style="right:0"></span>`;
+
+  $('#decayNote').textContent =
+    `${buckets.reduce((a,b)=>a+b.count,0).toLocaleString('id-ID')} indikator aktif` +
+    (over ? ` · ${over} sudah melewati TTL dan tidak lagi disajikan` : '');
+  $('#axisMid').textContent = `${Math.floor(span/2)} hari`;
+  $('#axisEnd').textContent = `${span} hari · dikeluarkan dari feed`;
+}
+
+/* --------------------------------------------------------------- indicators */
+function params(){
+  const p = new URLSearchParams({page:state.page, size:state.size,
+    sort:state.sort, order:state.order});
+  const map = {q:'#q', severity:'#fSeverity', tlp:'#fTlp', type:'#fType',
+               source:'#fSource', status:'#fStatus'};
+  for(const [k,sel] of Object.entries(map)) if($(sel).value) p.set(k, $(sel).value);
+  return p;
+}
+
+async function loadRows(){
+  const d = await api('/api/v1/indicators?'+params());
+  state.pages = d.pages;
+  $('#rows').innerHTML = d.items.map(r=>`
+    <tr>
+      <td><span class="ip${r.status!=='active'?' inactive':''}">${esc(r.ip_address)}</span>
+          <div class="meta st ${esc(r.status)}">${esc(r.status)}${r.hit_count>1?` · ${r.hit_count}×`:''}</div></td>
+      <td class="type">${esc(r.type)}</td>
+      <td><div class="heat">
+            <span class="lbl" style="color:${heatOf(r.severity)}">${esc(r.severity)}</span>
+            <span class="bar"><i style="width:${r.confidence}%;background:${heatOf(r.severity)}"></i></span>
+            <span class="meta">${r.confidence}%</span></div></td>
+      <td><span class="badge ${tlpClass(r.tlp)}">${esc(r.tlp)}</span></td>
+      <td><div class="meta">${ago(r.updated_at)}</div>
+          <div class="meta" style="color:var(--dim)">${esc(r.updated_at)}</div></td>
+      <td class="type">${esc(r.source)}${r.feed_name?`<div class="meta">${esc(r.feed_name)}</div>`:''}</td>
+      <td class="comment">${esc(r.comment)||'<span style="color:var(--dim)">—</span>'}</td>
+      <td><button class="rowdel" data-id="${r.id}" title="Hapus indikator">✕</button></td>
+    </tr>`).join('');
+
+  const e = $('#empty');
+  e.hidden = d.total > 0;
+  if(!d.total) e.innerHTML = '<b>Tidak ada indikator yang cocok</b>Longgarkan filter, atau tunggu push berikutnya dari FortiSOAR.';
+  $('#pageInfo').textContent =
+    `${d.total.toLocaleString('id-ID')} indikator · halaman ${d.page} dari ${d.pages}`;
+  $('#prev').disabled = d.page<=1;
+  $('#next').disabled = d.page>=d.pages;
+}
+
+function fillFilter(sel, values){
+  const el=$(sel), cur=el.value, first=el.options[0].outerHTML;
+  el.innerHTML = first + values.map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
+}
+
+async function loadFilters(){
+  const f = await api('/api/v1/filters');
+  fillFilter('#fSeverity', f.severities);
+  fillFilter('#fTlp', f.tlps);
+  fillFilter('#fType', f.types);
+}
+
+async function loadAudit(){
+  const d = await api('/api/v1/audit?limit=60');
+  $('#auditRows').innerHTML = d.items.map(a=>`<tr>
+      <td style="color:var(--dim)">${esc(a.ts)}</td>
+      <td style="color:var(--accent)">${esc(a.action)}</td>
+      <td>${esc(a.actor)}</td><td>${esc(a.client_ip)}</td>
+      <td>ok=${a.entries_ok} gagal=${a.entries_fail}</td>
+      <td style="color:${a.status_code<300?'var(--tlp-green)':'var(--tlp-red)'}">${a.status_code}</td>
+      <td>${a.duration_ms}ms</td>
+      <td class="comment">${esc(a.detail)}</td></tr>`).join('');
+}
+
+/* ------------------------------------------------------------------- events */
+let timer;
+$('#q').addEventListener('input', ()=>{ clearTimeout(timer);
+  timer=setTimeout(()=>{ state.page=1; loadRows(); }, 220); });
+['#fSeverity','#fTlp','#fType','#fSource','#fStatus'].forEach(s=>
+  $(s).addEventListener('change', ()=>{ state.page=1; loadRows(); }));
+$('#fSize').addEventListener('change', e=>{ state.size=+e.target.value; state.page=1; loadRows(); });
+$('#btnClear').onclick = ()=>{ ['#q','#fSeverity','#fTlp','#fType','#fSource','#fStatus']
+  .forEach(s=>$(s).value=''); state.page=1; loadRows(); };
+$('#prev').onclick = ()=>{ if(state.page>1){ state.page--; loadRows(); } };
+$('#next').onclick = ()=>{ if(state.page<state.pages){ state.page++; loadRows(); } };
+document.querySelectorAll('thead th[data-sort]').forEach(th=>th.onclick=()=>{
+  const k=th.dataset.sort;
+  state.order = state.sort===k && state.order==='desc' ? 'asc':'desc';
+  state.sort=k;
+  document.querySelectorAll('thead th').forEach(x=>x.querySelector('.arrow')?.remove());
+  th.insertAdjacentHTML('beforeend',`<span class="arrow"> ${state.order==='desc'?'▼':'▲'}</span>`);
+  loadRows();
+});
+$('#rows').addEventListener('click', async e=>{
+  const b=e.target.closest('.rowdel'); if(!b) return;
+  if(!confirm('Hapus indikator ini secara permanen?')) return;
+  await api('/api/v1/indicators/'+b.dataset.id,{method:'DELETE'});
+  toast('Indikator dihapus.'); boot();
+});
+$('#btnRefresh').onclick = ()=>{ boot(); toast('Konsol dimuat ulang.'); };
+$('#btnPrune').onclick = async ()=>{
+  const r = await api('/api/v1/maintenance/prune',{method:'POST'});
+  toast(`Pruning selesai — ${r.expired} kedaluwarsa, ${r.deleted} dihapus.`); boot();
+};
+
+/* ---------------------------------------------------------------- settings */
+let settingsCache = [];
+
+function settingsField(s){
+  const changed = '';
+  if(s.kind === 'bool'){
+    return `<div class="field" data-key="${s.key}">
+      <div class="row">
+        <label>${esc(s.label)}</label>
+        <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+        <span class="toggle${s.value === 'true' ? ' on' : ''}" data-toggle="${s.key}"></span>
+      </div>
+      ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}</div>`;
+  }
+  if(s.kind === 'enum'){
+    const opts = s.options.map(o =>
+      `<option${o.toLowerCase() === String(s.value).toLowerCase() ? ' selected' : ''}>${esc(o)}</option>`).join('');
+    return `<div class="field" data-key="${s.key}">
+      <div class="row">
+        <label>${esc(s.label)}</label>
+        <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+        <select data-input="${s.key}">${opts}</select>
+      </div>
+      ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}</div>`;
+  }
+  const wide = s.key.endsWith('_CIDRS');
+  return `<div class="field" data-key="${s.key}">
+    <div class="row">
+      <label>${esc(s.label)}</label>
+      <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+      ${wide ? '' : `<input data-input="${s.key}" type="${s.kind === 'int' ? 'number' : 'text'}" value="${esc(s.value)}">`}
+    </div>
+    ${wide ? `<input class="wide" data-input="${s.key}" type="text" value="${esc(s.value)}" placeholder="kosong = semua IP diizinkan">` : ''}
+    ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}
+    ${wide ? '<div class="warn">Loopback selalu dipertahankan agar threatfeedctl tetap dapat mengakses API.</div>' : ''}
+  </div>`;
+}
+
+async function openSettings(){
+  $('#settingsErr').textContent = '';
+  $('#drawer').classList.add('on');
+  $('#settingsBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  const d = await api('/api/v1/settings');
+  settingsCache = d.settings;
+
+  const groups = [];
+  for(const s of d.settings){
+    let g = groups.find(x => x.name === s.group);
+    if(!g){ g = {name: s.group, items: []}; groups.push(g); }
+    g.items.push(s);
+  }
+  $('#settingsBody').innerHTML = groups.map(g =>
+    `<section class="sgroup"><h3>${esc(g.name)}</h3>${g.items.map(settingsField).join('')}</section>`
+  ).join('') + `<section class="sgroup"><h3>Hanya dapat diubah di server</h3>
+      <div class="help">Token, password dashboard, kunci sesi, dan path database berada di
+      <code>${esc(d.env_file)}</code> dan sengaja tidak dapat diubah lewat antarmuka web.
+      Gunakan <code>sudo threatfeedctl config</code> atau <code>sudo threatfeedctl rotate</code>.</div>
+    </section>`;
+
+  $('#settingsBody').querySelectorAll('[data-toggle]').forEach(el => el.onclick = () => {
+    el.classList.toggle('on');
+    el.closest('.field').classList.add('changed');
+  });
+  $('#settingsBody').querySelectorAll('[data-input]').forEach(el =>
+    el.addEventListener('input', () => el.closest('.field').classList.add('changed')));
+}
+
+function collectSettings(){
+  const out = {};
+  for(const s of settingsCache){
+    const field = $(`.field[data-key="${s.key}"]`);
+    if(!field) continue;
+    const val = s.kind === 'bool'
+      ? String(field.querySelector('.toggle').classList.contains('on'))
+      : field.querySelector('[data-input]').value;
+    if(val !== s.value) out[s.key] = val;
+  }
+  return out;
+}
+
+$('#btnSettings').onclick = () => openSettings().catch(e => toast('Gagal memuat: ' + e.message));
+$('#btnCloseSettings').onclick = () => $('#drawer').classList.remove('on');
+$('#drawer').addEventListener('click', e => { if(e.target.id === 'drawer') $('#drawer').classList.remove('on'); });
+document.addEventListener('keydown', e => { if(e.key === 'Escape') $('#drawer').classList.remove('on'); });
+
+$('#btnSaveSettings').onclick = async () => {
+  const changes = collectSettings();
+  $('#settingsErr').textContent = '';
+  if(!Object.keys(changes).length){ toast('Tidak ada perubahan.'); return; }
+  try{
+    const r = await api('/api/v1/settings', {method:'PUT', body:JSON.stringify({changes})});
+    toast(`${r.changed.length} pengaturan disimpan — berlaku sekarang, tanpa restart.`);
+    await openSettings(); boot();
+  }catch(err){ $('#settingsErr').textContent = err.message; }
+};
+
+$('#btnResetSettings').onclick = async () => {
+  if(!confirm('Buang semua perubahan dari dashboard dan kembali mengikuti .env?')) return;
+  await api('/api/v1/settings/reset', {method:'POST', body:JSON.stringify({changes:{}})});
+  toast('Dikembalikan ke nilai .env.');
+  await openSettings(); boot();
+};
+
+/* ------------------------------------------------------------------ ekspor */
+function download(url){
+  // Navigasi biasa, bukan fetch+blob: cookie sesi ikut terkirim otomatis dan
+  // berkas besar dialirkan langsung ke disk tanpa ditahan di memori browser.
+  const a = document.createElement('a');
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+$('#btnExport').onclick = e => {
+  e.stopPropagation();
+  const m = $('#exportMenu');
+  m.classList.toggle('on');
+  if(m.classList.contains('on')){
+    const n = Number(($('#pageInfo').textContent.match(/^[\d.,]+/) || ['0'])[0]
+                     .replace(/[.,]/g, '')) || 0;
+    $('#expCount').textContent = `${n.toLocaleString('id-ID')} baris cocok dengan filter saat ini`;
+  }
+};
+document.addEventListener('click', () => $('#exportMenu').classList.remove('on'));
+$('#exportMenu').onclick = e => e.stopPropagation();
+
+$('#exportMenu').querySelectorAll('[data-export]').forEach(b => b.onclick = () => {
+  const p = params();                 // filter yang sama persis dengan tabel
+  p.delete('page'); p.delete('size');
+  p.set('format', b.dataset.export);
+  download('/api/v1/export/indicators?' + p);
+  $('#exportMenu').classList.remove('on');
+  toast('Ekspor dimulai.');
+});
+
+$('#exportMenu').querySelectorAll('[data-audit]').forEach(b => b.onclick = () => {
+  download('/api/v1/export/audit?format=' + b.dataset.audit + '&limit=5000');
+  $('#exportMenu').classList.remove('on');
+  toast('Ekspor jejak audit dimulai.');
+});
+
+$('#exportMenu').querySelector('[data-backup]').onclick = () => {
+  $('#exportMenu').classList.remove('on');
+  if(!confirm('Unduh snapshot penuh database?\n\n'
+    + 'Berkas ini memuat seluruh indikator dan jejak audit lengkap dengan alamat IP klien. '
+    + 'Perlakukan seperti backup produksi: simpan terenkripsi.')) return;
+  download('/api/v1/export/backup');
+  toast('Menyiapkan snapshot — unduhan dimulai sebentar lagi.');
+};
+
+/* ------------------------------------ generator snippet CLI FortiGate ------ */
+function snippetBox(){
+  return `<div class="snipbox" id="snipbox">
+    <header>
+      <h3>Snippet CLI FortiGate</h3>
+      <div class="spacer"></div>
+      <span class="help" id="snipState"></span>
+    </header>
+    <div class="opts">
+      <input id="snipName" value="IoC-WATCH-Blocklist" title="Nama objek external-resource">
+      <select id="snipType" title="set type">
+        <option value="address">type: address (IP)</option>
+        <option value="domain">type: domain</option>
+        <option value="malware">type: malware (hash)</option>
+        <option value="mac-address">type: mac-address</option>
+        <option value="category">type: category (URL)</option>
+      </select>
+      <input id="snipCategory" type="number" min="192" max="221" value="192"
+             style="width:90px;display:none" title="Nomor kategori (192-221)">
+      <select id="snipIdent" title="server-identity-check">
+        <option value="full">identity-check: full</option>
+        <option value="basic">identity-check: basic</option>
+        <option value="none">identity-check: none (self-signed)</option>
+      </select>
+      <input id="snipRefresh" type="number" min="1" max="43200" value="5" style="width:90px" title="refresh-rate (menit)">
+      <input id="snipSeverity" placeholder="severity (opsional)" title="Contoh: High,Malicious — pisahkan koma">
+      <input id="snipIndType" placeholder="type indikator (opsional)" title="Contoh: Deception,Malware — pisahkan koma">
+      <input id="snipTlp" placeholder="TLP (opsional)" title="Contoh: TLP:RED,TLP:AMBER">
+      <input id="snipFeed" placeholder="feed_name (opsional)">
+    </div>
+    <pre id="snipCode">Memuat…</pre>
+    <div class="snipnote" id="snipNotes"></div>
+    <div class="acts">
+      <button class="iconbtn" id="snipCopy">Salin</button>
+      <button class="iconbtn" id="snipReveal">Tampilkan token</button>
+      <button class="iconbtn" id="snipCurl">Salin perintah uji curl</button>
+    </div>
+  </div>`;
+}
+
+let snipReveal = false, snipData = {};
+
+async function loadSnippet(){
+  const type = $('#snipType').value;
+  // Nomor kategori hanya relevan untuk type=category; sembunyikan agar tidak
+  // terlihat seperti field yang harus diisi pada tipe lain.
+  $('#snipCategory').style.display = type === 'category' ? '' : 'none';
+
+  const p = new URLSearchParams({
+    name: $('#snipName').value || 'IoC-WATCH-Blocklist',
+    type,
+    identity_check: $('#snipIdent').value,
+    refresh_rate: $('#snipRefresh').value || 5,
+  });
+  if(type === 'category') p.set('category', $('#snipCategory').value || 192);
+  if($('#snipSeverity').value) p.set('severity', $('#snipSeverity').value);
+  if($('#snipIndType').value) p.set('indicator_type', $('#snipIndType').value);
+  if($('#snipTlp').value)      p.set('tlp', $('#snipTlp').value);
+  if($('#snipFeed').value)     p.set('feed_name', $('#snipFeed').value);
+  if(snipReveal) p.set('reveal', 'true');
+
+  try{
+    snipData = await api('/api/v1/admin/fortigate-snippet?' + p);
+  }catch(err){ $('#snipCode').textContent = 'Gagal memuat: ' + err.message; return; }
+
+  $('#snipCode').textContent = snipData.snippet;
+  const cnt = snipData.matched;
+  const tokState = snipData.token_revealed
+    ? 'token ditampilkan' : (snipData.token_set ? 'token disamarkan' : 'feed tanpa token');
+  $('#snipState').innerHTML =
+    `<span style="color:${cnt === 0 ? 'var(--tlp-red)' : 'var(--accent)'}">`
+    + `${cnt} entri cocok</span> · ${tokState}`;
+  $('#snipNotes').innerHTML = (snipData.notes||[]).map(n => `<div>${esc(n)}</div>`).join('');
+  $('#snipReveal').textContent = snipReveal ? 'Sembunyikan token' : 'Tampilkan token';
+}
+
+function bindSnippet(){
+  ['#snipName','#snipType','#snipCategory','#snipIdent','#snipRefresh',
+   '#snipSeverity','#snipIndType','#snipTlp','#snipFeed'].forEach(s => {
+    const el = $(s); if(!el) return;
+    // 'input' dengan debounce, bukan 'change': operator mengetik nilai filter
+    // dan ingin melihat jumlah entri cocok berubah saat itu juga.
+    el.addEventListener('change', loadSnippet);
+    if(el.tagName === 'INPUT'){
+      let d; el.addEventListener('input', () => { clearTimeout(d); d = setTimeout(loadSnippet, 350); });
+    }
+  });
+  $('#snipReveal').onclick = () => { snipReveal = !snipReveal; loadSnippet(); };
+  $('#snipCopy').onclick = () => copyText(snipData.snippet, 'Snippet disalin.');
+  $('#snipCurl').onclick = () => copyText(snipData.curl, 'Perintah curl disalin.');
+  loadSnippet();
+}
+
+function copyText(text, msg){
+  if(!text) return;
+  // navigator.clipboard hanya tersedia di secure context; di lab HTTP polos
+  // ia tidak ada sama sekali, jadi sediakan jalur cadangan.
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(() => toast(msg),
+      () => fallbackCopy(text, msg));
+  } else { fallbackCopy(text, msg); }
+}
+
+function fallbackCopy(text, msg){
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); toast(msg); }
+  catch(_){ toast('Salin manual — browser menolak akses clipboard.'); }
+  document.body.removeChild(ta);
+}
+
+/* ------------------------------------------------ System Configuration (.env) */
+let sysFields = [], sysMeta = {};
+
+function sysField(f){
+  const id = 'sys_' + f.key;
+  const src = f.present ? '<span class="src file">.env</span>'
+                        : '<span class="src">default</span>';
+  let input;
+  if(f.kind === 'bool'){
+    input = `<select id="${id}" data-key="${f.key}">
+        <option value="true"${String(f.value)==='true'?' selected':''}>true</option>
+        <option value="false"${String(f.value)!=='true'?' selected':''}>false</option>
+      </select>`;
+  } else if(f.kind === 'enum'){
+    input = `<select id="${id}" data-key="${f.key}">` + (f.options||[]).map(o =>
+        `<option${o===f.value?' selected':''}>${esc(o)}</option>`).join('') + '</select>';
+  } else if(f.kind === 'secret'){
+    // Nilai rahasia tidak pernah dikirim server ke browser. Field dibiarkan
+    // kosong; kosong berarti "jangan ubah".
+    input = `<input id="${id}" data-key="${f.key}" type="password" autocomplete="new-password"
+              placeholder="${f.length ? 'terisi ('+f.length+' karakter) — kosongkan untuk membiarkan' : 'belum diisi'}">
+      <button class="iconbtn" data-eye="${id}" title="Tampilkan/sembunyikan">Lihat</button>` +
+      (f.generate ? `<button class="iconbtn" data-gen="${id}" data-kind="${f.generate}">Buat acak</button>` : '');
+  } else {
+    input = `<input id="${id}" data-key="${f.key}" type="${f.kind==='int'?'number':'text'}"
+              value="${esc(f.value)}" autocomplete="off">`;
+  }
+  return `<div class="field" data-field="${f.key}">
+      <div class="row"><label for="${id}">${esc(f.label)}</label>${src}</div>
+      <div class="inputrow">${input}</div>
+      ${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}
+      ${f.danger ? `<div class="danger">${esc(f.danger)}</div>` : ''}
+      <div class="ferr" data-err="${f.key}"></div>
+    </div>`;
+}
+
+async function openSysConfig(){
+  $('#sysdrawer').classList.add('on');
+  $('#sysErr').textContent = ''; $('#sysChanged').textContent = '';
+  $('#sysBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  let d;
+  try{ d = await api('/api/v1/admin/settings'); }
+  catch(err){
+    $('#sysBody').innerHTML = `<div class="notice off"><b>Tidak tersedia.</b><br>${esc(err.message)}</div>`;
+    return;
+  }
+  sysFields = d.fields; sysMeta = d;
+
+  const groups = d.groups.map(name => ({name, items: d.fields.filter(f => f.group === name)}));
+  const warn = !d.helper_available
+    ? `<div class="notice off"><b>Helper root belum terpasang.</b> Perubahan dapat diketik
+       tetapi tidak dapat diterapkan. Jalankan di server:
+       <code>sudo bash deploy/setup.sh --upgrade --enable-env-editor</code></div>`
+    : `<div class="notice"><b>Menulis langsung ke ${esc(d.env_path)}.</b>
+       Setiap penyimpanan membuat backup, lalu service direstart otomatis beberapa detik
+       kemudian. Mengubah password, kunci sesi, atau path database akan memutus sesi Anda.</div>`;
+
+  $('#sysBody').innerHTML = warn + groups.map(g =>
+    `<section class="sgroup"><h3>${esc(g.name)}</h3>${g.items.map(sysField).join('')}` +
+    (g.name === 'Kredensial & Keamanan' ? snippetBox() : '') + `</section>`
+  ).join('') + `
+    <div class="confirm">
+      <label for="sysPw">Ketik ulang password dashboard untuk mengonfirmasi</label>
+      <input id="sysPw" type="password" autocomplete="current-password" placeholder="Password dashboard">
+    </div>`;
+
+  $('#sysBody').querySelectorAll('[data-eye]').forEach(b => b.onclick = () => {
+    const el = $('#' + b.dataset.eye);
+    el.type = el.type === 'password' ? 'text' : 'password';
+    b.textContent = el.type === 'password' ? 'Lihat' : 'Sembunyikan';
+  });
+  $('#sysBody').querySelectorAll('[data-gen]').forEach(b => b.onclick = async () => {
+    const r = await api('/api/v1/admin/settings/generate?kind=' + encodeURIComponent(b.dataset.kind),
+                        {method:'POST'});
+    const el = $('#' + b.dataset.gen);
+    el.value = r.value; el.type = 'text';
+    const eye = $(`[data-eye="${b.dataset.gen}"]`);
+    if(eye) eye.textContent = 'Sembunyikan';
+    toast('Nilai acak dibuat — belum tersimpan sampai Anda menekan Simpan.');
+    sysDirty();
+  });
+  $('#sysBody').querySelectorAll('[data-key]').forEach(el =>
+    el.addEventListener('input', sysDirty));
+  bindSnippet();
+  sysDirty();
+}
+
+function sysCollect(){
+  const out = {};
+  for(const f of sysFields){
+    const el = $('#sys_' + f.key);
+    if(!el) continue;
+    const v = el.value;
+    if(f.kind === 'secret'){ if(v !== '') out[f.key] = v; }
+    else if(String(v) !== String(f.value)) out[f.key] = v;
+  }
+  return out;
+}
+
+function sysDirty(){
+  const n = Object.keys(sysCollect()).length;
+  $('#sysChanged').textContent = n ? `${n} perubahan belum disimpan` : '';
+}
+
+$('#btnSysConfig').onclick = openSysConfig;
+$('#btnCloseSys').onclick = () => $('#sysdrawer').classList.remove('on');
+$('#sysdrawer').onclick = e => { if(e.target.id === 'sysdrawer') $('#sysdrawer').classList.remove('on'); };
+
+$('#btnSaveSys').onclick = async () => {
+  $('#sysErr').textContent = '';
+  $('#sysBody').querySelectorAll('.ferr').forEach(e => e.textContent = '');
+  $('#sysBody').querySelectorAll('.field').forEach(e => e.classList.remove('bad'));
+
+  const changes = sysCollect();
+  if(!Object.keys(changes).length){ $('#sysErr').textContent = 'Tidak ada perubahan.'; return; }
+  const pw = $('#sysPw').value;
+  if(!pw){ $('#sysErr').textContent = 'Password konfirmasi wajib diisi.'; return; }
+
+  const risky = Object.keys(changes).filter(k => (sysMeta.lockout_keys||[]).includes(k));
+  const msg = `Simpan ${Object.keys(changes).length} perubahan ke ${sysMeta.env_path} lalu restart service?`
+    + (risky.length ? `\n\nAnda mengubah: ${risky.join(', ')}.\nSesi Anda akan berakhir dan perlu login ulang.` : '');
+  if(!confirm(msg)) return;
+
+  $('#btnSaveSys').disabled = true;
+  try{
+    const r = await api('/api/v1/admin/settings',
+      {method:'POST', body:JSON.stringify({changes, confirm_password:pw})});
+    $('#sysPw').value = '';
+    toast(r.message || 'Tersimpan.');
+    if(r.lockout_warning && r.lockout_warning.length){
+      setTimeout(() => $('#gate').classList.add('on'), 4000);
+    } else {
+      setTimeout(openSysConfig, 5000);
+    }
+  }catch(err){
+    let detail = err.message;
+    try{
+      const parsed = JSON.parse(detail);
+      if(parsed.errors){
+        detail = 'Periksa kolom yang ditandai.';
+        for(const [k, m] of Object.entries(parsed.errors)){
+          const slot = $(`[data-err="${k}"]`);
+          if(slot){ slot.textContent = m; slot.closest('.field').classList.add('bad'); }
+        }
+      }
+    }catch(_){}
+    $('#sysErr').textContent = detail;
+  }finally{ $('#btnSaveSys').disabled = false; }
+};
+
+/* --------------------------------------------------------------------- boot */
+async function boot(){
+  try{
+    const s = await api('/api/v1/stats');
+    renderStats(s);
+    if(!state.filtersLoaded){ await loadFilters(); state.filtersLoaded=true; }
+    await loadRows();
+    await loadAudit();
+  }catch(err){ if(err.message!=='unauth') toast('Gagal memuat: '+err.message); }
+}
+boot();
+setInterval(()=>{ if(!$('#gate').classList.contains('on')) boot(); }, 30000);
+</script>
+</body>
+</html>
