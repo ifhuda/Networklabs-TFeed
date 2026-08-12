@@ -72,10 +72,10 @@ Non-interactive, for Ansible or repeat deployments:
 
 ```bash
 sudo bash deploy/setup.sh --yes \
-  --domain feed.example.com \
-  --soar-ip 10.10.10.20 \
+  --domain feed.example.com \ # optional
+  --soar-ip 192.168.10.20 \
   --fgt-ip 10.10.10.0/24 \
-  --tls existing --cert /etc/ssl/certs/feed.pem --key /etc/ssl/private/feed.key \
+  --tls existing --cert /etc/ssl/certs/feed.pem --key /etc/ssl/private/feed.key \ # optional
   --comments
 ```
 
