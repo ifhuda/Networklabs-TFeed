@@ -164,6 +164,128 @@ tbody tr:last-child td{border-bottom:0}
 .audit table{min-width:820px}
 .audit td{font-family:var(--mono);font-size:11px;padding:7px 14px}
 
+/* ================================================================= settings */
+.drawer{
+  position:fixed;inset:0;background:rgba(11,16,23,.72);z-index:80;display:none;
+}
+.drawer.on{display:block}
+.drawer .panel{
+  position:absolute;top:0;right:0;bottom:0;width:min(560px,100%);
+  background:var(--surface);border-left:1px solid var(--line);
+  display:flex;flex-direction:column;
+}
+.drawer .head{
+  padding:16px 20px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:12px;
+}
+.drawer .head h2{margin:0;font-size:15px;font-weight:700;letter-spacing:-.01em}
+.drawer .body{flex:1;overflow-y:auto;padding:4px 20px 20px}
+.drawer .foot{
+  padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:9px;align-items:center;
+}
+.sgroup{margin-top:22px}
+.sgroup > h3{
+  margin:0 0 10px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);font-weight:600;
+}
+.field{padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.field:last-child{border-bottom:0}
+.field .row{display:flex;align-items:center;gap:12px}
+.field label{flex:1;font-size:13px}
+.field .src{
+  font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  padding:2px 6px;border-radius:2px;border:1px solid var(--line);color:var(--dim);
+}
+.field .src.dashboard{color:var(--accent);border-color:var(--accent-dim)}
+/* --- halaman System Configuration (editor .env) --------------------------- */
+.field .src.file{color:var(--tlp-amber);border-color:var(--tlp-amber)}
+.field .help{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
+.field .danger{
+  font-size:11px;color:var(--tlp-amber);margin-top:5px;line-height:1.5;
+  padding-left:9px;border-left:2px solid var(--tlp-amber);
+}
+.field .ferr{font-size:11px;color:var(--tlp-red);margin-top:5px;min-height:0}
+.field.bad input,.field.bad select{border-color:var(--tlp-red)}
+.inputrow{display:flex;gap:6px;align-items:center;margin-top:7px}
+.inputrow input,.inputrow select{flex:1;min-width:0}
+.iconbtn{
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:7px 9px;cursor:pointer;font-size:11px;color:var(--muted);white-space:nowrap;
+}
+.iconbtn:hover{background:var(--surface-3);color:var(--text)}
+.notice{
+  border:1px solid var(--line);border-left:3px solid var(--tlp-amber);
+  background:var(--surface-2);border-radius:var(--r);padding:11px 13px;
+  font-size:12px;color:var(--muted);line-height:1.55;margin:14px 0 4px;
+}
+.notice b{color:var(--text)}
+.notice.off{border-left-color:var(--tlp-red)}
+.confirm{
+  border-top:1px solid var(--line);margin-top:18px;padding-top:14px;
+}
+.confirm label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+.confirm input{width:100%}
+.chg{font-size:11px;color:var(--accent);font-family:var(--mono)}
+/* --- generator snippet CLI FortiGate ------------------------------------- */
+.snipbox{margin:16px 0 4px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2)}
+.snipbox > header{
+  padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.snipbox > header h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.snipbox .opts{display:flex;gap:7px;flex-wrap:wrap;padding:11px 14px;border-bottom:1px solid var(--line)}
+.snipbox .opts input,.snipbox .opts select{
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:6px 8px;font-size:11px;
+}
+.snipbox .opts input{width:150px}
+.snipbox pre{
+  margin:0;padding:13px 14px;font-family:var(--mono);font-size:11.5px;line-height:1.6;
+  white-space:pre;overflow-x:auto;color:var(--text);
+}
+.snipbox .acts{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.snipnote{
+  font-size:11px;color:var(--tlp-amber);padding:0 14px 11px;line-height:1.55;
+}
+.snipnote div{padding-left:9px;border-left:2px solid var(--tlp-amber);margin-top:7px}
+
+/* --- menu ekspor ---------------------------------------------------------- */
+.menuwrap{position:relative}
+.menu{
+  position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:260px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:6px;display:none;box-shadow:0 12px 32px rgba(0,0,0,.45);
+}
+.menu.on{display:block}
+.menu button{
+  display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;
+  padding:8px 10px;border-radius:3px;font-size:12px;color:var(--text);
+}
+.menu button:hover{background:var(--surface-3)}
+.menu button small{display:block;color:var(--muted);font-size:10.5px;margin-top:2px}
+.menu hr{border:0;border-top:1px solid var(--line);margin:5px 0}
+.menu .lbl{
+  font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  font-weight:600;padding:7px 10px 4px;
+}
+.field input,.field select{
+  width:190px;padding:6px 9px;background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r);font-family:var(--mono);font-size:12px;
+}
+.field input.wide{width:100%;margin-top:8px}
+.field .help{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
+.field.changed{background:rgba(53,208,195,.05);margin:0 -10px;padding-left:10px;padding-right:10px;border-radius:var(--r)}
+.field .warn{font-size:11px;color:var(--tlp-amber);margin-top:5px}
+.toggle{
+  position:relative;width:40px;height:22px;border-radius:99px;background:var(--surface-3);
+  border:1px solid var(--line);cursor:pointer;flex:none;transition:background .15s;
+}
+.toggle::after{
+  content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:99px;
+  background:var(--dim);transition:transform .15s,background .15s;
+}
+.toggle.on{background:var(--accent-dim);border-color:var(--accent)}
+.toggle.on::after{transform:translateX(18px);background:var(--accent)}
+.serr{color:var(--tlp-red);font-size:12px;flex:1}
+
 /* ==================================================================== login */
 .gate{position:fixed;inset:0;background:rgba(11,16,23,.94);display:none;place-items:center;z-index:99}
 .gate.on{display:grid}
@@ -197,6 +319,8 @@ tbody tr:last-child td{border-bottom:0}
     </div>
     <div class="spacer"></div>
     <span class="pill"><span class="dot" id="healthDot"></span><span id="healthTxt">menghubungkan…</span></span>
+    <button class="btn ghost" id="btnSettings">Pengaturan</button>
+    <button class="btn ghost" id="btnSysConfig">Konfigurasi Sistem</button>
     <button class="btn ghost" id="btnRefresh">Muat ulang</button>
     <button class="btn ghost" id="btnPrune">Jalankan pruning</button>
     <button class="btn ghost" id="btnLogout">Keluar</button>
@@ -237,6 +361,21 @@ tbody tr:last-child td{border-bottom:0}
     </select>
     <select id="fSize"><option>50</option><option>100</option><option>250</option><option>500</option></select>
     <button class="btn ghost" id="btnClear">Bersihkan filter</button>
+    <div class="menuwrap">
+      <button class="btn ghost" id="btnExport">Ekspor ▾</button>
+      <div class="menu" id="exportMenu">
+        <div class="lbl">Indikator — mengikuti filter aktif</div>
+        <button data-export="csv">Unduh CSV<small id="expCount">…</small></button>
+        <button data-export="json">Unduh JSON<small>Struktur penuh, untuk diproses ulang</small></button>
+        <hr>
+        <div class="lbl">Jejak audit</div>
+        <button data-audit="csv">Audit CSV<small>5.000 peristiwa terakhir</small></button>
+        <button data-audit="json">Audit JSON<small>5.000 peristiwa terakhir</small></button>
+        <hr>
+        <div class="lbl">Database</div>
+        <button data-backup="1">Backup penuh (.db)<small>Snapshot konsisten — memuat seluruh isi database</small></button>
+      </div>
+    </div>
   </div>
 
   <div class="tablewrap">
@@ -268,6 +407,38 @@ tbody tr:last-child td{border-bottom:0}
       <table><tbody id="auditRows"></tbody></table>
     </div>
   </details>
+</div>
+
+<div class="drawer" id="drawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Pengaturan</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseSettings">Tutup</button>
+    </div>
+    <div class="body" id="settingsBody"></div>
+    <div class="foot">
+      <span class="serr" id="settingsErr"></span>
+      <button class="btn ghost" id="btnResetSettings">Kembalikan ke .env</button>
+      <button class="btn primary" id="btnSaveSettings">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<div class="drawer" id="sysdrawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Konfigurasi Sistem</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseSys">Tutup</button>
+    </div>
+    <div class="body" id="sysBody"></div>
+    <div class="foot">
+      <span class="serr" id="sysErr"></span>
+      <span class="chg" id="sysChanged"></span>
+      <button class="btn primary" id="btnSaveSys">Simpan &amp; Terapkan</button>
+    </div>
+  </div>
 </div>
 
 <div class="gate" id="gate">
@@ -467,6 +638,417 @@ $('#btnRefresh').onclick = ()=>{ boot(); toast('Konsol dimuat ulang.'); };
 $('#btnPrune').onclick = async ()=>{
   const r = await api('/api/v1/maintenance/prune',{method:'POST'});
   toast(`Pruning selesai — ${r.expired} kedaluwarsa, ${r.deleted} dihapus.`); boot();
+};
+
+/* ---------------------------------------------------------------- settings */
+let settingsCache = [];
+
+function settingsField(s){
+  const changed = '';
+  if(s.kind === 'bool'){
+    return `<div class="field" data-key="${s.key}">
+      <div class="row">
+        <label>${esc(s.label)}</label>
+        <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+        <span class="toggle${s.value === 'true' ? ' on' : ''}" data-toggle="${s.key}"></span>
+      </div>
+      ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}</div>`;
+  }
+  if(s.kind === 'enum'){
+    const opts = s.options.map(o =>
+      `<option${o.toLowerCase() === String(s.value).toLowerCase() ? ' selected' : ''}>${esc(o)}</option>`).join('');
+    return `<div class="field" data-key="${s.key}">
+      <div class="row">
+        <label>${esc(s.label)}</label>
+        <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+        <select data-input="${s.key}">${opts}</select>
+      </div>
+      ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}</div>`;
+  }
+  const wide = s.key.endsWith('_CIDRS');
+  return `<div class="field" data-key="${s.key}">
+    <div class="row">
+      <label>${esc(s.label)}</label>
+      <span class="src ${s.source}">${s.source === 'dashboard' ? 'diubah' : '.env'}</span>
+      ${wide ? '' : `<input data-input="${s.key}" type="${s.kind === 'int' ? 'number' : 'text'}" value="${esc(s.value)}">`}
+    </div>
+    ${wide ? `<input class="wide" data-input="${s.key}" type="text" value="${esc(s.value)}" placeholder="kosong = semua IP diizinkan">` : ''}
+    ${s.help ? `<div class="help">${esc(s.help)}</div>` : ''}
+    ${wide ? '<div class="warn">Loopback selalu dipertahankan agar threatfeedctl tetap dapat mengakses API.</div>' : ''}
+  </div>`;
+}
+
+async function openSettings(){
+  $('#settingsErr').textContent = '';
+  $('#drawer').classList.add('on');
+  $('#settingsBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  const d = await api('/api/v1/settings');
+  settingsCache = d.settings;
+
+  const groups = [];
+  for(const s of d.settings){
+    let g = groups.find(x => x.name === s.group);
+    if(!g){ g = {name: s.group, items: []}; groups.push(g); }
+    g.items.push(s);
+  }
+  $('#settingsBody').innerHTML = groups.map(g =>
+    `<section class="sgroup"><h3>${esc(g.name)}</h3>${g.items.map(settingsField).join('')}</section>`
+  ).join('') + `<section class="sgroup"><h3>Hanya dapat diubah di server</h3>
+      <div class="help">Token, password dashboard, kunci sesi, dan path database berada di
+      <code>${esc(d.env_file)}</code> dan sengaja tidak dapat diubah lewat antarmuka web.
+      Gunakan <code>sudo threatfeedctl config</code> atau <code>sudo threatfeedctl rotate</code>.</div>
+    </section>`;
+
+  $('#settingsBody').querySelectorAll('[data-toggle]').forEach(el => el.onclick = () => {
+    el.classList.toggle('on');
+    el.closest('.field').classList.add('changed');
+  });
+  $('#settingsBody').querySelectorAll('[data-input]').forEach(el =>
+    el.addEventListener('input', () => el.closest('.field').classList.add('changed')));
+}
+
+function collectSettings(){
+  const out = {};
+  for(const s of settingsCache){
+    const field = $(`.field[data-key="${s.key}"]`);
+    if(!field) continue;
+    const val = s.kind === 'bool'
+      ? String(field.querySelector('.toggle').classList.contains('on'))
+      : field.querySelector('[data-input]').value;
+    if(val !== s.value) out[s.key] = val;
+  }
+  return out;
+}
+
+$('#btnSettings').onclick = () => openSettings().catch(e => toast('Gagal memuat: ' + e.message));
+$('#btnCloseSettings').onclick = () => $('#drawer').classList.remove('on');
+$('#drawer').addEventListener('click', e => { if(e.target.id === 'drawer') $('#drawer').classList.remove('on'); });
+document.addEventListener('keydown', e => { if(e.key === 'Escape') $('#drawer').classList.remove('on'); });
+
+$('#btnSaveSettings').onclick = async () => {
+  const changes = collectSettings();
+  $('#settingsErr').textContent = '';
+  if(!Object.keys(changes).length){ toast('Tidak ada perubahan.'); return; }
+  try{
+    const r = await api('/api/v1/settings', {method:'PUT', body:JSON.stringify({changes})});
+    toast(`${r.changed.length} pengaturan disimpan — berlaku sekarang, tanpa restart.`);
+    await openSettings(); boot();
+  }catch(err){ $('#settingsErr').textContent = err.message; }
+};
+
+$('#btnResetSettings').onclick = async () => {
+  if(!confirm('Buang semua perubahan dari dashboard dan kembali mengikuti .env?')) return;
+  await api('/api/v1/settings/reset', {method:'POST', body:JSON.stringify({changes:{}})});
+  toast('Dikembalikan ke nilai .env.');
+  await openSettings(); boot();
+};
+
+/* ------------------------------------------------------------------ ekspor */
+function download(url){
+  // Navigasi biasa, bukan fetch+blob: cookie sesi ikut terkirim otomatis dan
+  // berkas besar dialirkan langsung ke disk tanpa ditahan di memori browser.
+  const a = document.createElement('a');
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+$('#btnExport').onclick = e => {
+  e.stopPropagation();
+  const m = $('#exportMenu');
+  m.classList.toggle('on');
+  if(m.classList.contains('on')){
+    const n = Number(($('#pageInfo').textContent.match(/^[\d.,]+/) || ['0'])[0]
+                     .replace(/[.,]/g, '')) || 0;
+    $('#expCount').textContent = `${n.toLocaleString('id-ID')} baris cocok dengan filter saat ini`;
+  }
+};
+document.addEventListener('click', () => $('#exportMenu').classList.remove('on'));
+$('#exportMenu').onclick = e => e.stopPropagation();
+
+$('#exportMenu').querySelectorAll('[data-export]').forEach(b => b.onclick = () => {
+  const p = params();                 // filter yang sama persis dengan tabel
+  p.delete('page'); p.delete('size');
+  p.set('format', b.dataset.export);
+  download('/api/v1/export/indicators?' + p);
+  $('#exportMenu').classList.remove('on');
+  toast('Ekspor dimulai.');
+});
+
+$('#exportMenu').querySelectorAll('[data-audit]').forEach(b => b.onclick = () => {
+  download('/api/v1/export/audit?format=' + b.dataset.audit + '&limit=5000');
+  $('#exportMenu').classList.remove('on');
+  toast('Ekspor jejak audit dimulai.');
+});
+
+$('#exportMenu').querySelector('[data-backup]').onclick = () => {
+  $('#exportMenu').classList.remove('on');
+  if(!confirm('Unduh snapshot penuh database?\n\n'
+    + 'Berkas ini memuat seluruh indikator dan jejak audit lengkap dengan alamat IP klien. '
+    + 'Perlakukan seperti backup produksi: simpan terenkripsi.')) return;
+  download('/api/v1/export/backup');
+  toast('Menyiapkan snapshot — unduhan dimulai sebentar lagi.');
+};
+
+/* ------------------------------------ generator snippet CLI FortiGate ------ */
+function snippetBox(){
+  return `<div class="snipbox" id="snipbox">
+    <header>
+      <h3>Snippet CLI FortiGate</h3>
+      <div class="spacer"></div>
+      <span class="help" id="snipState"></span>
+    </header>
+    <div class="opts">
+      <input id="snipName" value="IoC-WATCH-Blocklist" title="Nama objek external-resource">
+      <select id="snipType" title="set type">
+        <option value="address">type: address (IP)</option>
+        <option value="domain">type: domain</option>
+        <option value="malware">type: malware (hash)</option>
+        <option value="mac-address">type: mac-address</option>
+        <option value="category">type: category (URL)</option>
+      </select>
+      <input id="snipCategory" type="number" min="192" max="221" value="192"
+             style="width:90px;display:none" title="Nomor kategori (192-221)">
+      <select id="snipIdent" title="server-identity-check">
+        <option value="full">identity-check: full</option>
+        <option value="basic">identity-check: basic</option>
+        <option value="none">identity-check: none (self-signed)</option>
+      </select>
+      <input id="snipRefresh" type="number" min="1" max="43200" value="5" style="width:90px" title="refresh-rate (menit)">
+      <input id="snipSeverity" placeholder="severity (opsional)" title="Contoh: High,Malicious — pisahkan koma">
+      <input id="snipIndType" placeholder="type indikator (opsional)" title="Contoh: Deception,Malware — pisahkan koma">
+      <input id="snipTlp" placeholder="TLP (opsional)" title="Contoh: TLP:RED,TLP:AMBER">
+      <input id="snipFeed" placeholder="feed_name (opsional)">
+    </div>
+    <pre id="snipCode">Memuat…</pre>
+    <div class="snipnote" id="snipNotes"></div>
+    <div class="acts">
+      <button class="iconbtn" id="snipCopy">Salin</button>
+      <button class="iconbtn" id="snipReveal">Tampilkan token</button>
+      <button class="iconbtn" id="snipCurl">Salin perintah uji curl</button>
+    </div>
+  </div>`;
+}
+
+let snipReveal = false, snipData = {};
+
+async function loadSnippet(){
+  const type = $('#snipType').value;
+  // Nomor kategori hanya relevan untuk type=category; sembunyikan agar tidak
+  // terlihat seperti field yang harus diisi pada tipe lain.
+  $('#snipCategory').style.display = type === 'category' ? '' : 'none';
+
+  const p = new URLSearchParams({
+    name: $('#snipName').value || 'IoC-WATCH-Blocklist',
+    type,
+    identity_check: $('#snipIdent').value,
+    refresh_rate: $('#snipRefresh').value || 5,
+  });
+  if(type === 'category') p.set('category', $('#snipCategory').value || 192);
+  if($('#snipSeverity').value) p.set('severity', $('#snipSeverity').value);
+  if($('#snipIndType').value) p.set('indicator_type', $('#snipIndType').value);
+  if($('#snipTlp').value)      p.set('tlp', $('#snipTlp').value);
+  if($('#snipFeed').value)     p.set('feed_name', $('#snipFeed').value);
+  if(snipReveal) p.set('reveal', 'true');
+
+  try{
+    snipData = await api('/api/v1/admin/fortigate-snippet?' + p);
+  }catch(err){ $('#snipCode').textContent = 'Gagal memuat: ' + err.message; return; }
+
+  $('#snipCode').textContent = snipData.snippet;
+  const cnt = snipData.matched;
+  const tokState = snipData.token_revealed
+    ? 'token ditampilkan' : (snipData.token_set ? 'token disamarkan' : 'feed tanpa token');
+  $('#snipState').innerHTML =
+    `<span style="color:${cnt === 0 ? 'var(--tlp-red)' : 'var(--accent)'}">`
+    + `${cnt} entri cocok</span> · ${tokState}`;
+  $('#snipNotes').innerHTML = (snipData.notes||[]).map(n => `<div>${esc(n)}</div>`).join('');
+  $('#snipReveal').textContent = snipReveal ? 'Sembunyikan token' : 'Tampilkan token';
+}
+
+function bindSnippet(){
+  ['#snipName','#snipType','#snipCategory','#snipIdent','#snipRefresh',
+   '#snipSeverity','#snipIndType','#snipTlp','#snipFeed'].forEach(s => {
+    const el = $(s); if(!el) return;
+    // 'input' dengan debounce, bukan 'change': operator mengetik nilai filter
+    // dan ingin melihat jumlah entri cocok berubah saat itu juga.
+    el.addEventListener('change', loadSnippet);
+    if(el.tagName === 'INPUT'){
+      let d; el.addEventListener('input', () => { clearTimeout(d); d = setTimeout(loadSnippet, 350); });
+    }
+  });
+  $('#snipReveal').onclick = () => { snipReveal = !snipReveal; loadSnippet(); };
+  $('#snipCopy').onclick = () => copyText(snipData.snippet, 'Snippet disalin.');
+  $('#snipCurl').onclick = () => copyText(snipData.curl, 'Perintah curl disalin.');
+  loadSnippet();
+}
+
+function copyText(text, msg){
+  if(!text) return;
+  // navigator.clipboard hanya tersedia di secure context; di lab HTTP polos
+  // ia tidak ada sama sekali, jadi sediakan jalur cadangan.
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(() => toast(msg),
+      () => fallbackCopy(text, msg));
+  } else { fallbackCopy(text, msg); }
+}
+
+function fallbackCopy(text, msg){
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); toast(msg); }
+  catch(_){ toast('Salin manual — browser menolak akses clipboard.'); }
+  document.body.removeChild(ta);
+}
+
+/* ------------------------------------------------ System Configuration (.env) */
+let sysFields = [], sysMeta = {};
+
+function sysField(f){
+  const id = 'sys_' + f.key;
+  const src = f.present ? '<span class="src file">.env</span>'
+                        : '<span class="src">default</span>';
+  let input;
+  if(f.kind === 'bool'){
+    input = `<select id="${id}" data-key="${f.key}">
+        <option value="true"${String(f.value)==='true'?' selected':''}>true</option>
+        <option value="false"${String(f.value)!=='true'?' selected':''}>false</option>
+      </select>`;
+  } else if(f.kind === 'enum'){
+    input = `<select id="${id}" data-key="${f.key}">` + (f.options||[]).map(o =>
+        `<option${o===f.value?' selected':''}>${esc(o)}</option>`).join('') + '</select>';
+  } else if(f.kind === 'secret'){
+    // Nilai rahasia tidak pernah dikirim server ke browser. Field dibiarkan
+    // kosong; kosong berarti "jangan ubah".
+    input = `<input id="${id}" data-key="${f.key}" type="password" autocomplete="new-password"
+              placeholder="${f.length ? 'terisi ('+f.length+' karakter) — kosongkan untuk membiarkan' : 'belum diisi'}">
+      <button class="iconbtn" data-eye="${id}" title="Tampilkan/sembunyikan">Lihat</button>` +
+      (f.generate ? `<button class="iconbtn" data-gen="${id}" data-kind="${f.generate}">Buat acak</button>` : '');
+  } else {
+    input = `<input id="${id}" data-key="${f.key}" type="${f.kind==='int'?'number':'text'}"
+              value="${esc(f.value)}" autocomplete="off">`;
+  }
+  return `<div class="field" data-field="${f.key}">
+      <div class="row"><label for="${id}">${esc(f.label)}</label>${src}</div>
+      <div class="inputrow">${input}</div>
+      ${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}
+      ${f.danger ? `<div class="danger">${esc(f.danger)}</div>` : ''}
+      <div class="ferr" data-err="${f.key}"></div>
+    </div>`;
+}
+
+async function openSysConfig(){
+  $('#sysdrawer').classList.add('on');
+  $('#sysErr').textContent = ''; $('#sysChanged').textContent = '';
+  $('#sysBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  let d;
+  try{ d = await api('/api/v1/admin/settings'); }
+  catch(err){
+    $('#sysBody').innerHTML = `<div class="notice off"><b>Tidak tersedia.</b><br>${esc(err.message)}</div>`;
+    return;
+  }
+  sysFields = d.fields; sysMeta = d;
+
+  const groups = d.groups.map(name => ({name, items: d.fields.filter(f => f.group === name)}));
+  const warn = !d.helper_available
+    ? `<div class="notice off"><b>Helper root belum terpasang.</b> Perubahan dapat diketik
+       tetapi tidak dapat diterapkan. Jalankan di server:
+       <code>sudo bash deploy/setup.sh --upgrade --enable-env-editor</code></div>`
+    : `<div class="notice"><b>Menulis langsung ke ${esc(d.env_path)}.</b>
+       Setiap penyimpanan membuat backup, lalu service direstart otomatis beberapa detik
+       kemudian. Mengubah password, kunci sesi, atau path database akan memutus sesi Anda.</div>`;
+
+  $('#sysBody').innerHTML = warn + groups.map(g =>
+    `<section class="sgroup"><h3>${esc(g.name)}</h3>${g.items.map(sysField).join('')}` +
+    (g.name === 'Kredensial & Keamanan' ? snippetBox() : '') + `</section>`
+  ).join('') + `
+    <div class="confirm">
+      <label for="sysPw">Ketik ulang password dashboard untuk mengonfirmasi</label>
+      <input id="sysPw" type="password" autocomplete="current-password" placeholder="Password dashboard">
+    </div>`;
+
+  $('#sysBody').querySelectorAll('[data-eye]').forEach(b => b.onclick = () => {
+    const el = $('#' + b.dataset.eye);
+    el.type = el.type === 'password' ? 'text' : 'password';
+    b.textContent = el.type === 'password' ? 'Lihat' : 'Sembunyikan';
+  });
+  $('#sysBody').querySelectorAll('[data-gen]').forEach(b => b.onclick = async () => {
+    const r = await api('/api/v1/admin/settings/generate?kind=' + encodeURIComponent(b.dataset.kind),
+                        {method:'POST'});
+    const el = $('#' + b.dataset.gen);
+    el.value = r.value; el.type = 'text';
+    const eye = $(`[data-eye="${b.dataset.gen}"]`);
+    if(eye) eye.textContent = 'Sembunyikan';
+    toast('Nilai acak dibuat — belum tersimpan sampai Anda menekan Simpan.');
+    sysDirty();
+  });
+  $('#sysBody').querySelectorAll('[data-key]').forEach(el =>
+    el.addEventListener('input', sysDirty));
+  bindSnippet();
+  sysDirty();
+}
+
+function sysCollect(){
+  const out = {};
+  for(const f of sysFields){
+    const el = $('#sys_' + f.key);
+    if(!el) continue;
+    const v = el.value;
+    if(f.kind === 'secret'){ if(v !== '') out[f.key] = v; }
+    else if(String(v) !== String(f.value)) out[f.key] = v;
+  }
+  return out;
+}
+
+function sysDirty(){
+  const n = Object.keys(sysCollect()).length;
+  $('#sysChanged').textContent = n ? `${n} perubahan belum disimpan` : '';
+}
+
+$('#btnSysConfig').onclick = openSysConfig;
+$('#btnCloseSys').onclick = () => $('#sysdrawer').classList.remove('on');
+$('#sysdrawer').onclick = e => { if(e.target.id === 'sysdrawer') $('#sysdrawer').classList.remove('on'); };
+
+$('#btnSaveSys').onclick = async () => {
+  $('#sysErr').textContent = '';
+  $('#sysBody').querySelectorAll('.ferr').forEach(e => e.textContent = '');
+  $('#sysBody').querySelectorAll('.field').forEach(e => e.classList.remove('bad'));
+
+  const changes = sysCollect();
+  if(!Object.keys(changes).length){ $('#sysErr').textContent = 'Tidak ada perubahan.'; return; }
+  const pw = $('#sysPw').value;
+  if(!pw){ $('#sysErr').textContent = 'Password konfirmasi wajib diisi.'; return; }
+
+  const risky = Object.keys(changes).filter(k => (sysMeta.lockout_keys||[]).includes(k));
+  const msg = `Simpan ${Object.keys(changes).length} perubahan ke ${sysMeta.env_path} lalu restart service?`
+    + (risky.length ? `\n\nAnda mengubah: ${risky.join(', ')}.\nSesi Anda akan berakhir dan perlu login ulang.` : '');
+  if(!confirm(msg)) return;
+
+  $('#btnSaveSys').disabled = true;
+  try{
+    const r = await api('/api/v1/admin/settings',
+      {method:'POST', body:JSON.stringify({changes, confirm_password:pw})});
+    $('#sysPw').value = '';
+    toast(r.message || 'Tersimpan.');
+    if(r.lockout_warning && r.lockout_warning.length){
+      setTimeout(() => $('#gate').classList.add('on'), 4000);
+    } else {
+      setTimeout(openSysConfig, 5000);
+    }
+  }catch(err){
+    let detail = err.message;
+    try{
+      const parsed = JSON.parse(detail);
+      if(parsed.errors){
+        detail = 'Periksa kolom yang ditandai.';
+        for(const [k, m] of Object.entries(parsed.errors)){
+          const slot = $(`[data-err="${k}"]`);
+          if(slot){ slot.textContent = m; slot.closest('.field').classList.add('bad'); }
+        }
+      }
+    }catch(_){}
+    $('#sysErr').textContent = detail;
+  }finally{ $('#btnSaveSys').disabled = false; }
 };
 
 /* --------------------------------------------------------------------- boot */

@@ -44,7 +44,9 @@ keep confirming them, and the dashboard shows you when they stop.
   FortiGate's CLI sometimes swallows `?`.
 - **Operator dashboard** — dark-themed, no CDN (works on air-gapped networks). Global
   search, TLP badges, and a TTL decay strip that warns you days before coverage lapses.
-- **Audit trail** — every ingest, feed pull, login, and prune, with client IP and
+- **Runtime settings** — TTL, comment format, allow-lists, and defaults are editable
+  from the dashboard and apply without a restart. Secrets remain file-only.
+- **Audit trail** — every ingest, feed pull, login, prune, and settings change, with client IP and
   duration. Tokens are recorded as SHA-256 fingerprints, never in plaintext.
 - **One-command installer** — packages, service account, virtualenv, credentials,
   systemd unit, nginx, TLS, firewall rules, and a functional self-test.
@@ -83,6 +85,7 @@ sudo bash deploy/setup.sh --yes \
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Installation, TLS modes, upgrade, uninstall |
 | [docs/USAGE.md](docs/USAGE.md) | FortiSOAR payloads, FortiGate configuration, CLI, dashboard |
+| [docs/SYSTEM-CONFIG.md](docs/SYSTEM-CONFIG.md) | Admin page that rewrites `.env`, sudoers rule, recovery |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | FortiDeceptor and generic third-party webhooks |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom-to-cause table drawn from real deployments |
 | [docs/id/PANDUAN.md](docs/id/PANDUAN.md) | Dokumentasi lengkap (Bahasa Indonesia) |

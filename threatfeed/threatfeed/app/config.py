@@ -36,12 +36,22 @@ DB_PATH = os.getenv("TF_DB_PATH", str(BASE_DIR / "data" / "threatfeed.db"))
 INGEST_TOKENS = _list("TF_INGEST_TOKENS")
 # Token untuk FortiGate -> GET /api/v1/feed/fortigate (kosong = feed publik)
 FEED_TOKENS = _list("TF_FEED_TOKENS")
+# Username HTTP Basic yang dikirim FortiGate (`set username` pada external-resource).
+# Kosong = username apa pun diterima, hanya password/token yang diperiksa. Ini
+# perilaku lama dan tetap menjadi default supaya instalasi yang sudah berjalan
+# tidak putus saat aplikasi ditingkatkan.
+FEED_USERNAME = os.getenv("TF_FEED_USERNAME", "").strip()
 # Password login dashboard
 ADMIN_PASSWORD = os.getenv("TF_ADMIN_PASSWORD", "")
 # Kunci HMAC untuk signed session cookie
 SECRET_KEY = os.getenv("TF_SECRET_KEY") or secrets.token_hex(32)
 SESSION_TTL_HOURS = _int("TF_SESSION_TTL_HOURS", 12)
 COOKIE_SECURE = _bool("TF_COOKIE_SECURE", True)
+# Halaman System Configuration menulis ulang /etc/threatfeed/threatfeed.env lewat
+# helper root. Nonaktif secara default: fitur ini memperluas dampak pembajakan
+# sesi dashboard dari "ubah kebijakan" menjadi "ubah kredensial", jadi harus
+# dinyalakan secara sadar oleh operator.
+ALLOW_ENV_WRITE = _bool("TF_ALLOW_ENV_WRITE", False)
 
 # --- Kebijakan feed --------------------------------------------------------
 TTL_DAYS = _int("TF_TTL_DAYS", 30)              # indikator dianggap basi setelah N hari

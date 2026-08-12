@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail        TEXT    NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_audit_ts     ON audit_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, ts DESC);
 """

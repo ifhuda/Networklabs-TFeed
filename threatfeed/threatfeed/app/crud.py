@@ -1,6 +1,8 @@
 """Operasi data: upsert/dedup, query, generator feed FortiGate, pruning, audit."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import config
 from .database import days_ago, get_conn, transaction, utcnow
 
@@ -93,7 +95,8 @@ def delete_indicator(indicator_id: int) -> bool:
 # ------------------------------------------------------------------ feed build
 def feed_rows(ttl_days: int | None = None, severity: str | None = None,
               tlp: str | None = None, feed_name: str | None = None,
-              min_confidence: int | None = None, limit: int | None = None) -> list:
+              min_confidence: int | None = None, limit: int | None = None,
+              type_: str | None = None) -> list:
     ttl = config.TTL_DAYS if ttl_days is None else ttl_days
     where = ["status = 'active'"]
     params: list = []
@@ -106,17 +109,29 @@ def feed_rows(ttl_days: int | None = None, severity: str | None = None,
     if minc > 0:
         where.append("confidence >= ?")
         params.append(minc)
+
+    def add_ci_filter(column: str, raw: str) -> None:
+        """Filter tanpa membedakan huruf besar-kecil.
+
+        Nilai tersimpan dinormalisasi ke Title Case ('High', 'Deception'), tetapi
+        URL di FortiGate lazim ditulis huruf kecil (?severity=high). Perbandingan
+        peka huruf akan mengembalikan feed KOSONG tanpa pesan apa pun — dan
+        blocklist yang diam-diam kosong adalah kegagalan yang tidak terlihat
+        sampai ada yang lolos.
+        """
+        vals = [v.strip().lower() for v in raw.split(",") if v.strip()]
+        if vals:
+            where.append(f"LOWER({column}) IN ({','.join('?' * len(vals))})")
+            params.extend(vals)
+
     if severity:
-        vals = [s.strip() for s in severity.split(",") if s.strip()]
-        where.append(f"severity IN ({','.join('?' * len(vals))})")
-        params += vals
+        add_ci_filter("severity", severity)
     if tlp:
-        vals = [t.strip().upper() for t in tlp.split(",") if t.strip()]
-        where.append(f"tlp IN ({','.join('?' * len(vals))})")
-        params += vals
+        add_ci_filter("tlp", tlp)
+    if type_:
+        add_ci_filter("type", type_)
     if feed_name:
-        where.append("feed_name = ?")
-        params.append(feed_name)
+        add_ci_filter("feed_name", feed_name)
 
     cap = min(limit or config.FEED_MAX_ENTRIES, config.FEED_MAX_ENTRIES)
     sql = (f"SELECT ip_address, type, severity, confidence, tlp, source, comment, updated_at "
@@ -308,3 +323,86 @@ def prune() -> dict:
         audit_purged = conn.execute(
             "DELETE FROM audit_log WHERE ts < ?", (days_ago(config.AUDIT_RETENTION_DAYS),)).rowcount
     return {"ts": now, "expired": expired, "deleted": deleted, "audit_purged": audit_purged}
+
+# --------------------------------------------------------------------- ekspor
+EXPORT_COLUMNS = ("id", "ip_address", "type", "severity", "confidence", "tlp",
+                  "source", "comment", "status", "feed_name", "hit_count",
+                  "first_seen", "created_at", "updated_at")
+
+
+def _search_clause(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
+                   source: str = "", status: str = "") -> tuple[str, list]:
+    """Klausa WHERE yang sama persis dengan yang dipakai tabel dashboard,
+    supaya 'ekspor hasil filter saat ini' benar-benar cocok dengan yang dilihat."""
+    where: list[str] = []
+    params: list = []
+    if q:
+        where.append("(ip_address LIKE ? OR type LIKE ? OR source LIKE ? OR "
+                     "comment LIKE ? OR tlp LIKE ? OR severity LIKE ? OR feed_name LIKE ?)")
+        params += [f"%{q}%"] * 7
+    for column, value in (("severity", severity), ("tlp", tlp), ("type", type_),
+                          ("source", source), ("status", status)):
+        if value:
+            vals = [v.strip() for v in value.split(",") if v.strip()]
+            where.append(f"{column} IN ({','.join('?' * len(vals))})")
+            params += vals
+    return (f"WHERE {' AND '.join(where)}" if where else ""), params
+
+
+def iter_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
+                    source: str = "", status: str = "", sort: str = "updated_at",
+                    order: str = "desc", batch: int = 500):
+    """Alirkan baris per potongan.
+
+    Generator, bukan fetchall(): ekspor 130 ribu indikator yang dimuat sekaligus
+    akan menahan puluhan MB di memori sebuah service yang dibatasi MemoryMax=1G.
+    """
+    clause, params = _search_clause(q, severity, tlp, type_, source, status)
+    sort = sort if sort in _SORTABLE else "updated_at"
+    order = "ASC" if str(order).lower() == "asc" else "DESC"
+    sql = (f"SELECT {', '.join(EXPORT_COLUMNS)} FROM indicators {clause} "
+           f"ORDER BY {sort} {order}")
+    cur = get_conn().execute(sql, params)
+    while True:
+        rows = cur.fetchmany(batch)
+        if not rows:
+            return
+        for row in rows:
+            yield dict(row)
+
+
+def count_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
+                     source: str = "", status: str = "") -> int:
+    clause, params = _search_clause(q, severity, tlp, type_, source, status)
+    return get_conn().execute(
+        f"SELECT COUNT(*) c FROM indicators {clause}", params).fetchone()["c"]
+
+
+def iter_audit(limit: int = 5000, action: str = ""):
+    sql = "SELECT * FROM audit_log"
+    params: list = []
+    if action:
+        sql += " WHERE action = ?"
+        params.append(action)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(max(1, min(limit, 100000)))
+    cur = get_conn().execute(sql, params)
+    while True:
+        rows = cur.fetchmany(500)
+        if not rows:
+            return
+        for row in rows:
+            yield dict(row)
+
+
+def snapshot(dest: str) -> int:
+    """Salinan konsisten memakai API backup bawaan SQLite.
+
+    Menyalin berkasnya dengan `cp` saat service hidup tidak aman: transaksi
+    terakhir masih bisa berada di berkas -wal, dan salinannya kehilangan itu.
+    """
+    import sqlite3
+    src = get_conn()
+    with sqlite3.connect(dest) as out:
+        src.backup(out)
+    return Path(dest).stat().st_size

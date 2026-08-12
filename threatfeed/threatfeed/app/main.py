@@ -2,18 +2,26 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
+import io
+import shutil
+import tempfile
 import json
 import logging
+from urllib.parse import quote
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import (BackgroundTasks, Body, Depends, FastAPI, HTTPException, Query,
+                     Request, Response, status)
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse, StreamingResponse)
 from pydantic import BaseModel, Field
 
-from . import config, crud, security
+from . import config, crud, envfile, security, settings as settings_store
 from .database import init_db, utcnow
 from .normalize import NormalizeError, deep_find_ips, flatten, parse_payload
 
@@ -41,6 +49,9 @@ async def _pruner():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    failed = settings_store.apply_to_config()
+    if failed:
+        log.warning("Override pengaturan tidak valid, diabaikan: %s", ", ".join(failed))
     if not config.INGEST_TOKENS:
         log.warning("TF_INGEST_TOKENS kosong — endpoint /api/v1/ingest akan menolak semua request.")
     if not config.ADMIN_PASSWORD:
@@ -208,6 +219,7 @@ async def fortigate_feed(
     clean: bool | None = Query(None, description="true = IP murni tanpa komentar"),
     comments: bool | None = Query(None, description="Paksa komentar inline on/off"),
     severity: str = Query("", description="Filter, pisahkan koma. Contoh: Malicious,Critical"),
+    type: str = Query("", description="Filter tipe indikator. Contoh: Malware,Deception"),
     tlp: str = Query("", description="Filter TLP, pisahkan koma"),
     feed_name: str = Query("", description="Batasi ke satu feed FortiSOAR"),
     min_confidence: int | None = Query(None, ge=0, le=100),
@@ -220,7 +232,7 @@ async def fortigate_feed(
     ip, ua = _req_meta(request)
 
     rows = await asyncio.to_thread(
-        crud.feed_rows, ttl_days, severity, tlp, feed_name, min_confidence, limit)
+        crud.feed_rows, ttl_days, severity, tlp, feed_name, min_confidence, limit, type)
 
     # Urutan penentuan, dari yang paling spesifik:
     #   1. path /clean dan .txt selalu bersih; /annotated selalu berkomentar
@@ -248,7 +260,8 @@ async def fortigate_feed(
     await asyncio.to_thread(
         crud.log_event, "feed_pull", actor, ip, ua, entries_ok=len(rows), status_code=200,
         duration_ms=int((time.perf_counter() - started) * 1000),
-        detail=f"clean={clean} inline={inline} sev={severity or '*'} tlp={tlp or '*'}",
+        detail=f"clean={clean} inline={inline} sev={severity or '*'} "
+               f"type={type or '*'} tlp={tlp or '*'}",
     )
 
     if request.headers.get("if-none-match") == etag:
@@ -334,6 +347,382 @@ async def remove_indicator(indicator_id: int, request: Request,
     await asyncio.to_thread(crud.log_event, "delete", actor, ip, ua, entries_ok=1,
                             detail=f"id={indicator_id}")
     return {"status": "ok", "deleted": indicator_id}
+
+
+class SettingsBody(BaseModel):
+    changes: dict[str, str] = Field(default_factory=dict)
+
+
+@app.get("/api/v1/settings", tags=["dashboard"])
+async def get_settings(actor: str = Depends(security.require_session)):
+    return {"settings": await asyncio.to_thread(settings_store.current),
+            "readonly_keys": list(settings_store.SECRET_KEYS),
+            "env_file": "/etc/threatfeed/threatfeed.env"}
+
+
+@app.put("/api/v1/settings", tags=["dashboard"])
+async def put_settings(request: Request, body: SettingsBody,
+                       actor: str = Depends(security.require_session)):
+    try:
+        result = await asyncio.to_thread(settings_store.update, body.changes, actor)
+    except settings_store.ValidationError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    ip, ua = _req_meta(request)
+    await asyncio.to_thread(crud.log_event, "settings_update", actor, ip, ua,
+                            entries_ok=len(result["changed"]),
+                            detail=json.dumps(result["values"])[:1000])
+    return result
+
+
+@app.post("/api/v1/settings/reset", tags=["dashboard"])
+async def reset_settings(request: Request, body: SettingsBody,
+                         actor: str = Depends(security.require_session)):
+    keys = list(body.changes) or None
+    reset_keys = await asyncio.to_thread(settings_store.reset, keys, actor)
+    ip, ua = _req_meta(request)
+    await asyncio.to_thread(crud.log_event, "settings_reset", actor, ip, ua,
+                            entries_ok=len(reset_keys), detail=",".join(reset_keys))
+    return {"reset": reset_keys}
+
+
+# ======================================================= SYSTEM CONFIGURATION
+# Halaman admin yang menulis ulang /etc/threatfeed/threatfeed.env.
+#
+# Tiga lapis penjagaan, karena fitur ini memberi antarmuka web kemampuan
+# mengubah kredensial servernya sendiri:
+#   1. TF_ALLOW_ENV_WRITE harus dinyalakan di berkas .env — hanya root di server
+#   2. Password dashboard harus diketik ulang pada setiap penyimpanan
+#   3. Helper root memvalidasi ulang berkas kandidat dari nol sebelum memasangnya
+class EnvSaveBody(BaseModel):
+    changes: dict[str, str] = Field(default_factory=dict)
+    confirm_password: str = ""
+    restart: bool = True
+
+
+def _require_env_write() -> None:
+    if not config.ALLOW_ENV_WRITE:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Pengeditan berkas .env lewat dashboard dinonaktifkan. "
+            "Nyalakan dengan TF_ALLOW_ENV_WRITE=true di /etc/threatfeed/threatfeed.env, "
+            "lalu restart service.")
+
+
+@app.get("/api/v1/admin/settings", tags=["admin"])
+async def admin_settings_get(actor: str = Depends(security.require_session)):
+    _require_env_write()
+    try:
+        fields = await asyncio.to_thread(envfile.describe)
+    except envfile.EnvError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
+    return {
+        "fields": fields,
+        "groups": envfile.GROUP_ORDER,
+        "env_path": str(envfile.ENV_PATH),
+        "helper_available": envfile.helper_available(),
+        "lockout_keys": sorted(envfile.LOCKOUT_KEYS),
+        "mask": envfile.MASK,
+    }
+
+
+@app.post("/api/v1/admin/settings/generate", tags=["admin"])
+async def admin_settings_generate(kind: str = Query("hex32"),
+                                  actor: str = Depends(security.require_session)):
+    _require_env_write()
+    try:
+        return {"value": envfile.generate(kind)}
+    except envfile.EnvError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+@app.post("/api/v1/admin/settings", tags=["admin"])
+async def admin_settings_save(request: Request, body: EnvSaveBody,
+                              actor: str = Depends(security.require_session)):
+    _require_env_write()
+    ip, ua = _req_meta(request)
+
+    if not security.verify_password(body.confirm_password):
+        await asyncio.to_thread(crud.log_event, "env_write_denied", actor, ip, ua,
+                                status_code=401, detail="password konfirmasi salah")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Password dashboard salah. Konfirmasi diperlukan untuk "
+                            "menulis ulang berkas konfigurasi.")
+
+    clean, errors = envfile.validate(body.changes)
+    if errors:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            {"message": "Validasi gagal", "errors": errors})
+    if not clean:
+        return {"status": "noop", "changed": [], "message": "Tidak ada nilai yang berubah."}
+
+    if not envfile.helper_available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Helper {envfile.APPLY_HELPER} tidak terpasang. Jalankan "
+            f"'sudo bash deploy/setup.sh --upgrade --enable-env-editor' di server.")
+
+    try:
+        await asyncio.to_thread(envfile.stage, clean)
+    except envfile.EnvError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"Gagal menyiapkan berkas kandidat: {exc}")
+
+    # Menulis berkas kandidat sudah cukup: systemd path unit yang mendeteksinya
+    # dan menjalankan helper sebagai root. Aplikasi hanya menunggu berkas hasil.
+    ok_applied, output = await asyncio.to_thread(envfile.trigger_and_wait)
+
+    # Nama kunci dicatat, nilainya tidak: jejak audit tidak boleh menjadi tempat
+    # kedua tersimpannya token dan password dalam bentuk terbaca.
+    changed = sorted(clean)
+    await asyncio.to_thread(
+        crud.log_event, "env_write", actor, ip, ua, entries_ok=len(changed),
+        status_code=200 if ok_applied else 500,
+        detail=f"keys={','.join(changed)} applied={ok_applied} {output[:300]}")
+
+    if not ok_applied:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"Perubahan tidak diterapkan: {output}")
+
+    lockout = sorted(set(changed) & envfile.LOCKOUT_KEYS)
+    return {
+        "status": "ok",
+        "changed": changed,
+        "restart": "scheduled",
+        "helper_output": output,
+        "lockout_warning": lockout,
+        "message": ("Konfigurasi tersimpan. Service akan restart dalam beberapa detik."
+                    + (" Anda perlu login ulang." if lockout else "")),
+    }
+
+
+@app.get("/api/v1/admin/fortigate-snippet", tags=["admin"])
+async def fortigate_snippet(request: Request, reveal: bool = Query(False),
+                            name: str = Query("IoC-WATCH-Blocklist"),
+                            type: str = Query("address"),
+                            category: int = Query(192, ge=192, le=221),
+                            identity_check: str = Query("full"),
+                            refresh_rate: int = Query(5, ge=1, le=43200),
+                            severity: str = Query(""),
+                            indicator_type: str = Query("", description="Filter kolom type indikator"),
+                            tlp: str = Query(""), feed_name: str = Query(""),
+                            actor: str = Depends(security.require_session)):
+    """Rakit blok `config system external-resource` siap tempel.
+
+    Token dikirim tersamar kecuali diminta eksplisit dengan ?reveal=true, dan
+    pengungkapannya dicatat di jejak audit — nilainya sama sensitifnya dengan
+    isi berkas .env, jadi tidak dikirim ke browser hanya karena halaman dibuka.
+    """
+    ip, ua = _req_meta(request)
+
+    # Basis URL diambil dari permintaan ini sendiri: itulah alamat yang terbukti
+    # dapat dijangkau klien, bukan tebakan dari hostname server.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    scheme = forwarded_proto or request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    base = f"{scheme}://{host}"
+
+    path = "/api/v1/feed/fortigate/annotated" if config.FEED_INLINE_COMMENTS \
+        else "/api/v1/feed/fortigate"
+    params = []
+    for key, val in (("severity", severity), ("type", indicator_type),
+                     ("tlp", tlp), ("feed_name", feed_name)):
+        if val.strip():
+            params.append(f"{key}={quote(val.strip(), safe=',:')}")
+    resource = base + path + ("?" + "&".join(params) if params else "")
+
+    # Hitung berapa entri yang benar-benar akan diterima FortiGate dengan filter
+    # ini. Filter yang salah ketik menghasilkan feed kosong tanpa pesan error,
+    # dan itu baru ketahuan setelah ada yang lolos di firewall.
+    matched = len(await asyncio.to_thread(
+        crud.feed_rows, None, severity, tlp, feed_name, None, None, indicator_type))
+
+    username = config.FEED_USERNAME or "fortigate"
+    token_set = bool(config.FEED_TOKENS)
+    if reveal and token_set:
+        token = config.FEED_TOKENS[0]
+        await asyncio.to_thread(crud.log_event, "feed_token_revealed", actor, ip, ua,
+                                detail="token feed ditampilkan di dashboard")
+    else:
+        token = "<TOKEN_FEED>" if token_set else "<KOSONG — feed tanpa autentikasi>"
+
+    identity_check = identity_check if identity_check in ("full", "basic", "none") else "full"
+    valid_types = ("address", "domain", "malware", "mac-address", "category")
+    res_type = type if type in valid_types else "address"
+
+    lines = [
+        "config system external-resource",
+        f'    edit "{name}"',
+        f"        set type {res_type}",
+    ]
+    if res_type == "category":
+        # Feed tipe category wajib punya nomor kategori buatan sendiri (192–221);
+        # tanpa itu FortiGate menolak konfigurasinya.
+        lines.append(f"        set category {category}")
+    lines += [
+        f'        set resource "{resource}"',
+        f"        set refresh-rate {refresh_rate}",
+        f"        set server-identity-check {identity_check}",
+    ]
+    if token_set:
+        lines += [f'        set username "{username}"', f"        set password {token}"]
+    lines += ["        set status enable", "    next", "end"]
+
+    notes = []
+    if res_type != "address":
+        notes.append(
+            f"Server ini hanya menghasilkan daftar alamat IP, sedangkan 'set type "
+            f"{res_type}' membuat FortiGate mengharapkan isi yang berbeda "
+            f"({'domain' if res_type == 'domain' else 'hash malware' if res_type == 'malware' else 'alamat MAC' if res_type == 'mac-address' else 'daftar URL'}). "
+            f"Entri kemungkinan besar ditolak — pakai 'address' kecuali Anda memang "
+            f"mengarahkannya ke sumber lain.")
+    if res_type == "category":
+        notes.append(f"Nomor kategori {category} harus unik di FortiGate dan berada "
+                     f"pada rentang 192–221 yang dicadangkan untuk kategori buatan sendiri.")
+    if not config.FEED_USERNAME:
+        notes.append("TF_FEED_USERNAME kosong: username apa pun diterima. Isi di atas "
+                     "hanya contoh; hanya token yang benar-benar diperiksa.")
+    if identity_check == "none":
+        notes.append("server-identity-check none melewati verifikasi sertifikat. "
+                     "Pakai hanya untuk sertifikat self-signed di lab.")
+    if config.FEED_INLINE_COMMENTS:
+        notes.append("Feed memakai komentar inline. Setelah diterapkan, cocokkan "
+                     "'diagnose sys external-resource entry-list' dengan "
+                     "'threatfeedctl feed | grep -c .' — FortiOS tidak menjamin format ini.")
+    if not config.FEED_ALLOWED_CIDRS:
+        notes.append("Allowlist feed kosong: semua alamat dapat menarik feed.")
+
+    if matched == 0 and (severity or indicator_type or tlp or feed_name):
+        notes.append("Filter ini tidak cocok dengan satu indikator pun — FortiGate akan "
+                     "menerima feed KOSONG. Periksa ejaan nilai filter.")
+
+    return {"snippet": "\n".join(lines), "resource": resource, "username": username,
+            "matched": matched,
+            "type": res_type, "category": category,
+            "token_revealed": bool(reveal and token_set), "token_set": token_set,
+            "curl": f"curl -v -u {username}:{token} \"{resource}\"",
+            "notes": notes}
+
+
+# ===================================================================== EKSPOR
+def _csv_safe(value) -> str:
+    """Netralkan formula injection sebelum nilai masuk ke berkas CSV.
+
+    Excel dan LibreOffice mengeksekusi sel yang diawali = + - @ atau tab/CR.
+    Kolom `comment` diisi dari FortiSOAR dan webhook pihak ketiga, jadi isinya
+    tidak tepercaya: satu komentar berisi =HYPERLINK(...) cukup untuk menyerang
+    analis yang membuka hasil ekspor. Awalan kutip tunggal membuat spreadsheet
+    memperlakukannya sebagai teks.
+    """
+    s = "" if value is None else str(value)
+    if s[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
+def _csv_stream(rows, columns):
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(columns)
+    yield buf.getvalue()
+    buf.seek(0), buf.truncate(0)
+    for row in rows:
+        writer.writerow([_csv_safe(row.get(c)) for c in columns])
+        if buf.tell() > 32768:          # kirim per potongan, bukan sekaligus
+            yield buf.getvalue()
+            buf.seek(0), buf.truncate(0)
+    if buf.tell():
+        yield buf.getvalue()
+
+
+def _json_stream(rows):
+    yield "[\n"
+    first = True
+    for row in rows:
+        yield ("" if first else ",\n") + json.dumps(row, ensure_ascii=False)
+        first = False
+    yield "\n]\n"
+
+
+def _stamp(prefix: str, ext: str) -> str:
+    return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.{ext}"
+
+
+@app.get("/api/v1/export/indicators", tags=["export"])
+async def export_indicators(
+    request: Request,
+    actor: str = Depends(security.require_session),
+    format: str = Query("csv", pattern="^(csv|json)$"),
+    q: str = "", severity: str = "", tlp: str = "", type: str = "",
+    source: str = "", status_: str = Query("", alias="status"),
+    sort: str = "updated_at", order: str = "desc",
+):
+    """Ekspor indikator sesuai filter yang sedang aktif di dashboard."""
+    ip, ua = _req_meta(request)
+    total = await asyncio.to_thread(crud.count_indicators, q, severity, tlp, type,
+                                    source, status_)
+    await asyncio.to_thread(
+        crud.log_event, "export", actor, ip, ua, entries_ok=total,
+        detail=f"format={format} q={q or '*'} severity={severity or '*'} "
+               f"type={type or '*'} status={status_ or '*'}")
+
+    rows = crud.iter_indicators(q, severity, tlp, type, source, status_, sort, order)
+    if format == "json":
+        return StreamingResponse(
+            _json_stream(rows), media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{_stamp("ioc-watch", "json")}"',
+                     "X-Export-Rows": str(total)})
+    return StreamingResponse(
+        _csv_stream(rows, crud.EXPORT_COLUMNS), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_stamp("ioc-watch", "csv")}"',
+                 "X-Export-Rows": str(total)})
+
+
+@app.get("/api/v1/export/audit", tags=["export"])
+async def export_audit(request: Request, actor: str = Depends(security.require_session),
+                       format: str = Query("csv", pattern="^(csv|json)$"),
+                       limit: int = Query(5000, ge=1, le=100000), action: str = ""):
+    ip, ua = _req_meta(request)
+    await asyncio.to_thread(crud.log_event, "export", actor, ip, ua,
+                            detail=f"audit format={format} limit={limit}")
+    rows = crud.iter_audit(limit, action)
+    cols = ("id", "ts", "action", "actor", "client_ip", "user_agent",
+            "entries_ok", "entries_fail", "status_code", "duration_ms", "detail")
+    if format == "json":
+        return StreamingResponse(
+            _json_stream(rows), media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{_stamp("ioc-watch-audit", "json")}"'})
+    return StreamingResponse(
+        _csv_stream(rows, cols), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_stamp("ioc-watch-audit", "csv")}"'})
+
+
+@app.get("/api/v1/export/backup", tags=["export"])
+async def export_backup(request: Request, actor: str = Depends(security.require_session),
+                        background: BackgroundTasks = None):
+    """Unduh snapshot database yang konsisten.
+
+    Berkas ini memuat SELURUH isi database — indikator, jejak audit lengkap
+    dengan alamat IP klien, dan override pengaturan. Perlakukan seperti backup
+    produksi: simpan terenkripsi, jangan kirim lewat kanal yang tidak aman.
+    """
+    ip, ua = _req_meta(request)
+    tmp = Path(tempfile.mkdtemp(prefix="tf-backup-")) / _stamp("threatfeed", "db")
+    try:
+        size = await asyncio.to_thread(crud.snapshot, str(tmp))
+    except Exception as exc:
+        log.exception("snapshot gagal")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"Snapshot database gagal: {exc}")
+
+    await asyncio.to_thread(crud.log_event, "backup_download", actor, ip, ua,
+                            entries_ok=size, detail=f"bytes={size}")
+
+    # Berkas sementara dihapus setelah respons terkirim, bukan sebelumnya:
+    # FileResponse masih membacanya saat handler ini sudah selesai.
+    if background is not None:
+        background.add_task(shutil.rmtree, tmp.parent, ignore_errors=True)
+    return FileResponse(str(tmp), media_type="application/octet-stream",
+                        filename=tmp.name, background=background)
 
 
 @app.get("/api/v1/audit", tags=["dashboard"])

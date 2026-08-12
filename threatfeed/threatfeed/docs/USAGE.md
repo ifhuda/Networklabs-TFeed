@@ -103,9 +103,55 @@ config system external-resource
 end
 ```
 
-`username`/`password` are sent as HTTP Basic; the server checks the **password** against
-`TF_FEED_TOKENS`, so the username can be anything. Use `server-identity-check none`
-while the certificate is self-signed.
+`username`/`password` are sent as HTTP Basic.
+
+**The username.** By default `TF_FEED_USERNAME` is empty and only the password is
+checked, so any username works — that is the historical behaviour and it stays the
+default so upgrades don't break running installs. Set `TF_FEED_USERNAME` (Konfigurasi
+Sistem → Kredensial & Keamanan) to require an exact match:
+
+| `TF_FEED_USERNAME` | FortiGate sends | Result |
+|---|---|---|
+| empty | any username | accepted |
+| `fortigate` | `fortigate` | accepted |
+| `fortigate` | anything else | `401 Username feed tidak cocok` |
+
+Bearer tokens and `?token=` carry no username, so they are unaffected — forcing one
+there would break legitimate integrations without adding security, since the token is
+the secret either way.
+
+Setting a username after FortiGate is already pulling will break the feed until
+`set username` on the firewall matches. Change both together.
+
+Use `server-identity-check none` while the certificate is self-signed.
+
+### CLI snippet generator
+
+Konfigurasi Sistem → Kredensial & Keamanan has a **Snippet CLI FortiGate** panel that
+assembles the block above from live configuration: the base URL comes from the request
+you are making (the address proven reachable, not a guess from the hostname), the path
+follows `TF_FEED_INLINE_COMMENTS`, and the username follows `TF_FEED_USERNAME`. Object name, `set type`, `server-identity-check`, `refresh-rate`, and optional
+`severity` / `type` / `tlp` / `feed_name` filters are adjustable inline.
+
+The header shows **how many indicators actually match** the current filters, updating as
+you type. Zero turns red and adds an explicit warning — a mistyped filter produces an
+empty feed that FortiGate accepts without complaint.
+
+**`set type`** is selectable: `address` (the default and the only one that matches what
+this server produces), `domain`, `malware`, `mac-address`, and `category`. Choosing
+anything other than `address` raises a warning, because the feed emits IP addresses and
+FortiGate would be expecting domains, hashes, MAC addresses, or a URL list — the entries
+would be rejected. Picking `category` reveals a category-number field; FortiOS requires
+one in the 192–221 range reserved for user-defined categories, and the generator adds the
+matching `set category` line.
+
+The token renders as `<TOKEN_FEED>` until you press **Tampilkan token**; revealing it is
+recorded in the audit trail as `feed_token_revealed`. **Salin perintah uji curl** copies
+an equivalent `curl -u` command for testing from the FortiGate side.
+
+The panel also warns about conditions worth knowing before you paste: an empty username
+policy, `identity-check none`, inline comments needing entry-count validation, and an
+empty feed allow-list.
 
 Applying it to a policy:
 
@@ -155,16 +201,24 @@ parameterised URL into a nonexistent path that answers `404` — reported in the
 |---|---|---|
 | `comments=true` | `TF_FEED_INLINE_COMMENTS` | Force comments on or off |
 | `severity=` | all | `severity=Malicious,Critical` |
+| `type=` | all | Indicator type: `type=Deception,Malware` |
 | `tlp=` | all | `tlp=TLP:RED,TLP:AMBER` |
 | `feed_name=` | all | Restrict to one FortiSOAR feed |
 | `min_confidence=` | `TF_FEED_MIN_CONFIDENCE` | e.g. `min_confidence=80` |
 | `ttl_days=` | `TF_TTL_DAYS` | Per-resource TTL override |
 | `limit=` | 131072 | FortiOS hard limit |
 
+All four value filters (`severity`, `type`, `tlp`, `feed_name`) are **case-insensitive**,
+so `?severity=high` and `?severity=High` behave identically. Stored values are normalised
+to Title Case, and a case-sensitive match would have returned an empty feed with no error
+at all — a blocklist that silently empties is a failure you only notice after something
+gets through.
+
 Several external-resource objects can share one server:
 
 ```
-edit "IoC-CRITICAL"  set resource "https://…/feed/fortigate?severity=Malicious,Critical"
+edit "IoC-CRITICAL"  set resource "https://…/feed/fortigate?severity=malicious,critical"
+edit "IoC-DECEPTION" set resource "https://…/feed/fortigate?type=deception"
 edit "IoC-TOR"       set resource "https://…/feed/fortigate?feed_name=Tor-Exit-Nodes"
 ```
 
@@ -220,6 +274,42 @@ comment, and feed name, plus five dropdown filters.
 
 **Audit trail.** The last 60 events with client IP and duration.
 
+### Export
+
+The **Ekspor** button in the toolbar offers five downloads:
+
+| Item | Contents |
+|---|---|
+| Indikator CSV | Every column, **honouring the filters currently applied to the table** |
+| Indikator JSON | Same rows as an array of objects, for re-processing |
+| Audit CSV / JSON | The last 5,000 audit events |
+| Backup penuh (.db) | A consistent SQLite snapshot of the whole database |
+
+The indicator exports reuse exactly the same query as the table, so "export what I am
+looking at" means precisely that — the menu shows the matching row count before you
+click.
+
+Exports stream in chunks rather than being assembled in memory: 130,000 indicators held
+as one string would be tens of megabytes inside a service capped at `MemoryMax=1G`.
+
+**CSV values are neutralised against formula injection.** Excel and LibreOffice execute
+cells beginning with `=`, `+`, `-`, or `@`, and the `comment` column is filled by
+FortiSOAR and third-party webhooks — content you did not write. A single
+`=HYPERLINK(...)` comment would otherwise attack the analyst who opens the export, so
+such values are prefixed with a single quote and treated as text.
+
+**The backup file contains everything** — indicators, the full audit trail including
+client IP addresses, and settings overrides. Treat it as a production backup: store it
+encrypted, and do not send it over unprotected channels. It uses SQLite's `backup` API,
+so it is safe to take while the service is running, unlike `cp`.
+
+The equivalent from the CLI:
+
+```bash
+sudo threatfeedctl backup                 # to /var/backups/threatfeed/
+sudo threatfeedctl search "" > out.txt    # ad-hoc queries
+```
+
 The page refreshes itself every 30 seconds.
 
 ---
@@ -261,9 +351,44 @@ password immediately.
 
 ---
 
-## Configuration reference
+## Configuration
 
-`/etc/threatfeed/threatfeed.env` — restart the service after any change.
+### From the dashboard
+
+Click **Pengaturan** in the header. Fifteen policy settings can be changed there, and
+they take effect immediately — no restart:
+
+| Group | Settings |
+|---|---|
+| Feed policy | TTL, hard-delete window, minimum confidence, entry cap |
+| Feed format | Inline comments on/off, comment format |
+| Entry defaults | Type, severity, TLP, source, confidence |
+| Access control | Ingest and feed CIDR allow-lists |
+| Maintenance | Prune interval, audit retention |
+
+Changes are stored as overrides in the database, not written back to the `.env` file,
+and each field shows whether its current value comes from `.env` or the dashboard.
+**Kembalikan ke .env** discards every override at once.
+
+Two safeguards are built in. Loopback entries are always re-added to the CIDR allow-lists,
+so a typo cannot lock out `threatfeedctl`, which reaches the API over `127.0.0.1`. And
+tokens, the dashboard password, the session key, the database path, and the proxy flags
+are deliberately **not** editable from the web interface — otherwise a hijacked dashboard
+session would escalate into full control. Those stay in `.env`, changeable only by root:
+
+```bash
+sudo threatfeedctl config
+sudo threatfeedctl rotate ingest|feed|admin
+```
+
+The service reads `.env` as the service account, which has no write access to it. That
+is why overrides live in the database: a network-facing process should not be able to
+rewrite its own credentials.
+
+### From the file
+
+`/etc/threatfeed/threatfeed.env` — restart the service after any change. Values here are
+the baseline; dashboard overrides sit on top of them.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -271,6 +396,7 @@ password immediately.
 | `TF_HARD_DELETE_DAYS` | `0` | Permanently delete expired rows after N days. `0` = never |
 | `TF_INGEST_TOKENS` | — | Comma-separated; multiple values enable zero-downtime rotation |
 | `TF_FEED_TOKENS` | — | Same, for FortiGate. Empty means the feed is public |
+| `TF_FEED_USERNAME` | empty | Required HTTP Basic username. Empty = any username accepted |
 | `TF_ADMIN_PASSWORD` | — | Dashboard login |
 | `TF_SECRET_KEY` | random | Session cookie HMAC key. **Set a fixed value** or sessions break on restart |
 | `TF_INGEST_ALLOWED_CIDRS` | empty | Allow-list for ingestion. Empty = all. Keep loopback |

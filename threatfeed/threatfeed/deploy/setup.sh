@@ -41,6 +41,7 @@ MODE=install           # install | upgrade | uninstall
 INSTALL_NGINX=1
 ROLLBACK_ON_FAIL=0
 FEED_COMMENTS=""        # yes | no
+ENV_EDITOR=0            # pasang helper root + sudoers untuk editor .env di GUI
 COMMENT_FORMAT=plain
 
 #================================================================== tampilan ===
@@ -84,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --tls)        TLS_MODE="$2"; shift 2 ;;
     --cert)       CERT_FILE="$2"; shift 2 ;;
     --key)        KEY_FILE="$2"; shift 2 ;;
+    --enable-env-editor)  ENV_EDITOR=1; shift ;;
     --comments)      FEED_COMMENTS=yes; shift ;;
     --no-comments)   FEED_COMMENTS=no;  shift ;;
     --comment-format) COMMENT_FORMAT="$2"; shift 2 ;;
@@ -126,7 +128,11 @@ if [[ $MODE == uninstall ]]; then
     PURGE=0
   fi
   systemctl disable --now threatfeed 2>/dev/null || true
-  rm -f "$UNIT" "$CTL"; systemctl daemon-reload
+  systemctl disable --now threatfeed-apply-env.path 2>/dev/null || true
+  rm -f "$UNIT" "$CTL" /etc/sudoers.d/threatfeed \
+        /etc/systemd/system/threatfeed-apply-env.{path,service} \
+        /usr/local/sbin/threatfeed-apply-env
+  systemctl daemon-reload
   rm -f /etc/nginx/sites-enabled/threatfeed.conf /etc/nginx/sites-available/threatfeed.conf
   systemctl reload nginx 2>/dev/null || true
   rm -rf "$APP_DIR"
@@ -372,6 +378,7 @@ if [[ $FRESH -eq 1 ]]; then
       -e "s|^TF_COOKIE_SECURE=.*|TF_COOKIE_SECURE=$COOKIE_SECURE|" \
       -e "s|^TF_FEED_INLINE_COMMENTS=.*|TF_FEED_INLINE_COMMENTS=$([[ $FEED_COMMENTS == yes ]] && echo true || echo false)|" \
       -e "s|^TF_FEED_COMMENT_FORMAT=.*|TF_FEED_COMMENT_FORMAT=$COMMENT_FORMAT|" \
+      -e "s|^TF_ALLOW_ENV_WRITE=.*|TF_ALLOW_ENV_WRITE=$([[ $ENV_EDITOR -eq 1 ]] && echo true || echo false)|" \
       -e "s|^TF_INGEST_ALLOWED_CIDRS=.*|TF_INGEST_ALLOWED_CIDRS=$ING_CIDRS|" \
       -e "s|^TF_FEED_ALLOWED_CIDRS=.*|TF_FEED_ALLOWED_CIDRS=$FEED_CIDRS|" \
       "$SRC_DIR/deploy/threatfeed.env.example" > "$ENV_FILE"
@@ -538,6 +545,49 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$TEST_URL/api/v1/ingest" 
 ok "Auth    → token salah ditolak (401)"
 
 #=============================================================== threatfeedctl ==
+if [[ $ENV_EDITOR -eq 1 ]]; then
+  step "Mengaktifkan editor .env di dashboard"
+  install -m 750 -o root -g root "$SRC_DIR/deploy/threatfeed-apply-env" \
+    /usr/local/sbin/threatfeed-apply-env
+  # Path unit systemd, BUKAN sudo. Unit utama berjalan dengan
+  # NoNewPrivileges=true yang memblokir sudo sepenuhnya; melemahkan flag itu demi
+  # satu fitur admin bukan pertukaran yang sepadan. Aplikasi cukup menuliskan
+  # berkas kandidat, systemd yang menjalankan helper sebagai root.
+  install -m 644 -o root -g root "$SRC_DIR/deploy/threatfeed-apply-env.service" \
+    /etc/systemd/system/threatfeed-apply-env.service
+  install -m 644 -o root -g root "$SRC_DIR/deploy/threatfeed-apply-env.path" \
+    /etc/systemd/system/threatfeed-apply-env.path
+  systemctl daemon-reload
+  systemctl enable --now threatfeed-apply-env.path >/dev/null 2>&1
+  # Aturan sudoers lama dari versi sebelumnya tidak lagi dipakai dan dibuang.
+  rm -f /etc/sudoers.d/threatfeed
+  if systemctl is-active --quiet threatfeed-apply-env.path; then
+    ok "Helper root aktif lewat systemd path unit — halaman Konfigurasi Sistem siap"
+  else
+    warn "threatfeed-apply-env.path tidak aktif. Cek: systemctl status threatfeed-apply-env.path"
+  fi
+  # Nyalakan pada instalasi yang .env-nya dipertahankan. Hitung dulu jumlah
+  # kemunculannya: menambah baris tanpa memeriksa akan menghasilkan kunci ganda,
+  # dan helper root menolak berkas seperti itu.
+  COUNT=$(grep -c '^TF_ALLOW_ENV_WRITE=' "$ENV_FILE" || true)
+  if [[ ${COUNT:-0} -gt 1 ]]; then
+    # Sisakan kemunculan terakhir — itulah nilai yang berlaku bagi systemd.
+    LAST=$(grep -n '^TF_ALLOW_ENV_WRITE=' "$ENV_FILE" | sed -n '$p' | cut -d: -f1)
+    awk -v keep="$LAST" 'NR!=keep && /^TF_ALLOW_ENV_WRITE=/ {next} {print}' \
+      "$ENV_FILE" > "$ENV_FILE.dedup" && mv "$ENV_FILE.dedup" "$ENV_FILE"
+    chown root:"$APP_USER" "$ENV_FILE"; chmod 640 "$ENV_FILE"
+    warn "Kunci TF_ALLOW_ENV_WRITE ganda ditemukan dan sudah dirapikan"
+    COUNT=1
+  fi
+  if [[ ${COUNT:-0} -eq 0 ]]; then
+    printf '\n# Editor konfigurasi lewat dashboard (butuh helper root)\nTF_ALLOW_ENV_WRITE=true\n' >> "$ENV_FILE"
+    systemctl restart threatfeed
+  elif ! grep -q '^TF_ALLOW_ENV_WRITE=true' "$ENV_FILE"; then
+    sed -i 's|^TF_ALLOW_ENV_WRITE=.*|TF_ALLOW_ENV_WRITE=true|' "$ENV_FILE"
+    systemctl restart threatfeed
+  fi
+fi
+
 step "Memasang perintah bantu 'threatfeedctl'"
 install -m 755 "$SRC_DIR/deploy/threatfeedctl" "$CTL" 2>/dev/null \
   || warn "deploy/threatfeedctl tidak ditemukan — dilewati"

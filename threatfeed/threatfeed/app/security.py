@@ -62,16 +62,23 @@ def _bearer(request: Request) -> str | None:
     return None
 
 
-def _basic(request: Request) -> str | None:
-    """FortiGate 'set username/password' pada external-resource mengirim Basic auth."""
+def _basic(request: Request) -> tuple[str | None, str | None]:
+    """FortiGate 'set username/password' pada external-resource mengirim Basic auth.
+
+    Kembalikan (username, password). Username dipisah agar bisa diperiksa
+    terpisah bila TF_FEED_USERNAME diisi.
+    """
     auth = request.headers.get("authorization", "")
     if auth[:6].lower() != "basic ":
-        return None
+        return None, None
     try:
         decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", "replace")
     except (binascii.Error, ValueError):
-        return None
-    return decoded.split(":", 1)[1] if ":" in decoded else decoded
+        return None, None
+    if ":" in decoded:
+        user, password = decoded.split(":", 1)
+        return user, password
+    return None, decoded
 
 
 def require_ingest(request: Request) -> str:
@@ -94,7 +101,21 @@ def require_feed(request: Request) -> str:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Alamat sumber tidak diizinkan.")
     if not config.FEED_TOKENS:
         return "fortigate:anonymous"
-    token = _bearer(request) or _basic(request) or request.query_params.get("token")
+
+    basic_user, basic_pass = _basic(request)
+    token = _bearer(request) or basic_pass or request.query_params.get("token")
+
+    # Username hanya diperiksa bila dikonfigurasi DAN klien memang mengirim
+    # Basic auth. Bearer dan ?token= tidak membawa username, dan memaksanya di
+    # sana akan memutus integrasi yang sah tanpa alasan keamanan tambahan —
+    # rahasianya tetap tokennya.
+    if config.FEED_USERNAME and basic_user is not None:
+        if not hmac.compare_digest(basic_user, config.FEED_USERNAME):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "Username feed tidak cocok.",
+                headers={"WWW-Authenticate": 'Basic realm="threatfeed"'})
+
     if not token or not _match(token, config.FEED_TOKENS):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token feed tidak valid.",
                             headers={"WWW-Authenticate": 'Basic realm="threatfeed"'})
