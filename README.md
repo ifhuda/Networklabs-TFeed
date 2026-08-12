@@ -56,7 +56,7 @@ keep confirming them, and the dashboard shows you when they stop.
 ## Quick start
 
 ```bash
-unzip threatfeed.zip && cd threatfeed      # or: git clone && cd
+sudo unzip threatfeed.zip && cd threatfeed      # or: git clone && cd
 sudo bash deploy/setup.sh
 ```
 
