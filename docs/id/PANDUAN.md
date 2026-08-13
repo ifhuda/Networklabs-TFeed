@@ -235,7 +235,7 @@ config system external-resource
         set type address
         set resource "https://threatfeed.networklabs.id/api/v1/feed/fortigate"
         set refresh-rate 5
-        set server-identity-check none
+        set server-identity-check full
         set username "fortigate"
         set password ENC <TF_FEED_TOKENS>
         set status enable
@@ -287,7 +287,6 @@ Karena itu output bersih dijadikan perilaku bawaan, dan tersedia tiga path setar
 /api/v1/feed/fortigate/clean      ← selalu IP murni
 /api/v1/feed/fortigate.txt        ← selalu IP murni, untuk alat yang menuntut ekstensi
 /api/v1/feed/fortigate/annotated  ← selalu dengan komentar inline
-/api/v1/feed/fortigate/annotated?type={filter}  ← filter by type
 ```
 
 ### Menampilkan komentar di FortiGate

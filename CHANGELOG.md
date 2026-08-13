@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0
+
+### Fixed
+- `TF_BACKUP_DIR` left blank in `.env` (`TF_BACKUP_DIR=`) resolved to the current
+  working directory instead of the data directory, so scheduled backups wrote to the
+  wrong place and the restore panel showed it as empty. `--upgrade` now self-heals
+  existing installs; the shipped `.env` example no longer leaves this blank
+- Two different empty-string-handling bugs for the same variable existed in
+  `app/config.py` and `app/backup.py` — one was correct, one wasn't. Unified
+
+### Changed
+- **System Configuration page and database restore are now enabled by default.**
+  Previously opt-in via `--enable-env-editor`; a plain `sudo bash deploy/setup.sh
+  --upgrade` now installs both root helpers and turns `TF_ALLOW_ENV_WRITE=true` on.
+  `--enable-env-editor` still works as a backward-compatible alias. To keep the old
+  opt-in behaviour, use `--disable-env-editor`
+
 ## 1.0.0
 
 First public release.

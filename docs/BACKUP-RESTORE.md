@@ -108,17 +108,18 @@ FortiGate that stops receiving its blocklist is worse than a failed restore.
 The five most recent replaced databases are kept as `threatfeed.db.replaced-<stamp>` in
 the data directory.
 
-### Enabling restore
+### Restore is on by default
 
-The helper ships with the same flag as the `.env` editor:
+The helper installs automatically with a plain upgrade:
 
 ```bash
-sudo bash deploy/setup.sh --upgrade --enable-env-editor
+sudo bash deploy/setup.sh --upgrade
 systemctl status threatfeed-restore-db.path      # expect: active (waiting)
 ```
 
-Without it, backups still work — creation, rotation, download, and upload validation are
-all unaffected. Only the restore button is unavailable, and the panel says so.
+If it was turned off (`--disable-env-editor`), backups still work — creation, rotation,
+download, and upload validation are all unaffected. Only the restore button is
+unavailable, and the panel says so.
 
 ---
 
@@ -171,7 +172,8 @@ encrypted and restrict access accordingly.
 
 | Message | Cause | Fix |
 |---|---|---|
-| `Helper … tidak terpasang` | Restore helper missing | `sudo bash deploy/setup.sh --upgrade --enable-env-editor` |
+| `Helper … tidak terpasang` | Restore helper missing — the install predates this default, or `--disable-env-editor` was used | `sudo bash deploy/setup.sh --upgrade` |
+| Restore panel shows `0 berkas` / directory `.` | `TF_BACKUP_DIR=` was left blank in an older `.env` — `Path("")` resolves to the working directory, not the data directory | `sudo bash deploy/setup.sh --upgrade` self-heals this automatically; verify with `grep TF_BACKUP_DIR /etc/threatfeed/threatfeed.env` |
 | `bukan berkas database SQLite` | Wrong file uploaded | Check what you picked; use **Periksa berkas** |
 | `tabel wajib tidak ada` | A SQLite file, but not from IoC-WATCH | Use a snapshot from this application |
 | `pemeriksaan integritas SQLite gagal` | Corrupt file, often a truncated transfer | Re-copy it; verify with `sqlite3 … "PRAGMA quick_check"` |

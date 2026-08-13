@@ -20,7 +20,12 @@ from . import config, crud
 from .database import get_conn, utcnow
 
 DB_PATH = Path(config.DB_PATH)
-BACKUP_DIR = Path(os.getenv("TF_BACKUP_DIR", str(DB_PATH.parent / "backups")))
+# os.getenv(key, default) HANYA memakai default bila variabelnya TIDAK ADA.
+# Bila .env berisi baris "TF_BACKUP_DIR=" (ada, tapi kosong), getenv
+# mengembalikan string kosong, dan Path("") beresolusi ke direktori kerja saat
+# ini ("."), bukan ke lokasi data. Filter `or` menutup celah itu.
+BACKUP_DIR = Path(os.getenv("TF_BACKUP_DIR", "").strip()
+                 or str(DB_PATH.parent / "backups"))
 RESTORE_SPOOL = DB_PATH.parent / "restore-pending.db"
 RESTORE_RESULT = DB_PATH.parent / "restore-result"
 RESTORE_HELPER = os.getenv("TF_RESTORE_HELPER", "/usr/local/sbin/threatfeed-restore-db")

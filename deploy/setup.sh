@@ -13,6 +13,10 @@
 #          --soar-ip 10.10.10.20 --fgt-ip 10.10.10.1 --tls self-signed --yes
 #     sudo bash deploy/setup.sh --upgrade          # perbarui kode, kredensial tetap
 #     sudo bash deploy/setup.sh --uninstall        # copot bersih
+#
+#  Editor Konfigurasi Sistem (GUI) dan tombol Pulihkan database AKTIF secara
+#  default sejak versi ini — helper root + systemd path unit terpasang otomatis.
+#  Untuk mematikannya: sudo bash deploy/setup.sh --upgrade --disable-env-editor
 #===============================================================================
 set -Eeuo pipefail
 
@@ -41,7 +45,8 @@ MODE=install           # install | upgrade | uninstall
 INSTALL_NGINX=1
 ROLLBACK_ON_FAIL=0
 FEED_COMMENTS=""        # yes | no
-ENV_EDITOR=0            # pasang helper root + sudoers untuk editor .env di GUI
+ENV_EDITOR=1            # pasang helper root untuk editor .env + restore DB di GUI
+                        # (default AKTIF — pakai --disable-env-editor untuk mematikan)
 COMMENT_FORMAT=plain
 
 #================================================================== tampilan ===
@@ -85,7 +90,8 @@ while [[ $# -gt 0 ]]; do
     --tls)        TLS_MODE="$2"; shift 2 ;;
     --cert)       CERT_FILE="$2"; shift 2 ;;
     --key)        KEY_FILE="$2"; shift 2 ;;
-    --enable-env-editor)  ENV_EDITOR=1; shift ;;
+    --enable-env-editor)  ENV_EDITOR=1; shift ;;   # kompatibilitas mundur, sudah default
+    --disable-env-editor) ENV_EDITOR=0; shift ;;
     --comments)      FEED_COMMENTS=yes; shift ;;
     --no-comments)   FEED_COMMENTS=no;  shift ;;
     --comment-format) COMMENT_FORMAT="$2"; shift 2 ;;
@@ -392,6 +398,18 @@ else
   ING_TOKEN=$(awk -F= '/^TF_INGEST_TOKENS=/{print $2;exit}' "$ENV_FILE")
   FGT_TOKEN=$(awk -F= '/^TF_FEED_TOKENS=/{print $2;exit}'   "$ENV_FILE")
   ADM_PASS=$(awk  -F= '/^TF_ADMIN_PASSWORD=/{print $2;exit}' "$ENV_FILE")
+
+  # Perbaiki instalasi lama yang TF_BACKUP_DIR-nya kosong ("TF_BACKUP_DIR=" tanpa
+  # nilai). Baris seperti itu ADA di berkas, jadi Python membaca string kosong,
+  # bukan jatuh ke default — dan Path("") beresolusi ke direktori kerja saat itu
+  # ("."), bukan ke lokasi data. Backup otomatis lalu menulis ke tempat yang
+  # salah dan panel restore menemukannya kosong.
+  if grep -qE '^TF_BACKUP_DIR=\s*$' "$ENV_FILE"; then
+    sed -i 's|^TF_BACKUP_DIR=.*|TF_BACKUP_DIR=/var/lib/threatfeed/backups|' "$ENV_FILE"
+    warn "TF_BACKUP_DIR kosong ditemukan dan diperbaiki ke /var/lib/threatfeed/backups"
+    # Tidak perlu memicu restart sendiri di sini — unit systemd selalu
+    # di-restart tanpa syarat sesaat lagi di bagian "Memasang unit systemd".
+  fi
 fi
 # Token pertama saja (kolom ke-1) untuk contoh perintah, bila ada rotasi berkoma
 ING_TOKEN=${ING_TOKEN%%,*}

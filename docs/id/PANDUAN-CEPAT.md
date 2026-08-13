@@ -24,15 +24,15 @@ sudo mkdir -p /opt/threatfeed-src
 sudo unzip threatfeed-github.zip -d /tmp/tf && sudo cp -r /tmp/tf/threatfeed/. /opt/threatfeed-src/
 cd /opt/threatfeed-src
 
-# Pasang. Sertakan --enable-env-editor agar halaman Konfigurasi Sistem,
-# restore, dan generator snippet aktif.
+# Pasang. Halaman Konfigurasi Sistem, tombol Pulihkan, dan generator snippet
+# aktif secara DEFAULT — tidak perlu flag tambahan. Untuk mematikannya,
+# tambahkan --disable-env-editor.
 sudo bash deploy/setup.sh \
   --domain 192.168.110.9 \
   --soar-ip 192.168.0.99 \
   --fgt-ip 192.168.110.0/24 \
   --ttl 30 \
   --comments \
-  --enable-env-editor \
   --yes
 ```
 

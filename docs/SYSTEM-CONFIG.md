@@ -7,7 +7,7 @@ The dashboard has two settings surfaces, and the difference matters:
 | Stores to | `settings` table in SQLite | `/etc/threatfeed/threatfeed.env` |
 | Covers | 15 policy values | All 24 variables, including secrets |
 | Applies | Immediately, no restart | Rewrites the file, then restarts the service |
-| Enabled | Always | Opt-in via `TF_ALLOW_ENV_WRITE` |
+| Enabled | Always | **On by default** since this version; opt-out via `TF_ALLOW_ENV_WRITE=false` |
 | Needs | A dashboard session | Session **plus** password re-entry, plus a root helper |
 
 Use **Pengaturan** for day-to-day tuning. Use **Konfigurasi Sistem** when you need to
@@ -24,17 +24,22 @@ and delete indicators. With it, that same session can mint new ingest tokens and
 the admin password — the blast radius goes from "wrong policy" to "attacker owns the
 service".
 
-That is why it ships disabled, and why three independent gates stand in front of it:
+That is why two independent gates stand in front of it regardless of the default:
 
-1. **`TF_ALLOW_ENV_WRITE=true`** must be set in the `.env` file itself — only root on the
-   server can turn the feature on.
-2. **Password re-entry** on every save. A stolen session cookie alone is not enough.
-3. **The root helper re-validates from scratch.** The application is treated as an
+1. **Password re-entry** on every save. A stolen session cookie alone is not enough.
+2. **The root helper re-validates from scratch.** The application is treated as an
    untrusted caller; a bug or an injection in the web tier does not become a config
    write.
 
-If your threat model does not justify that, leave it off and use `threatfeedctl config`
-over SSH. Nothing else in the product depends on it.
+It ships **on** because most installs want a working admin page without an extra flag —
+but if your threat model does not justify it, turn it off and use `threatfeedctl config`
+over SSH instead:
+
+```bash
+sudo bash deploy/setup.sh --upgrade --disable-env-editor
+```
+
+Nothing else in the product depends on it being enabled.
 
 ---
 
@@ -90,12 +95,14 @@ a confirmation. A two-second transient timer lets the HTTP response finish first
 
 ```bash
 cd /opt/threatfeed-src
-sudo bash deploy/setup.sh --upgrade --enable-env-editor
+sudo bash deploy/setup.sh --upgrade
 ```
 
-That installs the helper to `/usr/local/sbin/threatfeed-apply-env` (mode 750,
-`root:root`), installs and enables the two systemd units, removes any sudoers rule left
-over from an earlier version, sets `TF_ALLOW_ENV_WRITE=true`, and restarts the service.
+A plain `--upgrade` is enough — this is on by default. It installs the helper to
+`/usr/local/sbin/threatfeed-apply-env` (mode 750, `root:root`), installs and enables the
+two systemd units, removes any sudoers rule left over from an earlier version, sets
+`TF_ALLOW_ENV_WRITE=true`, and restarts the service. (`--enable-env-editor` still works
+as an explicit alias, kept for scripts written against the previous default.)
 
 Manual equivalent:
 
@@ -134,12 +141,20 @@ prefer the sudo route anyway, you must set `NoNewPrivileges=no` — but that wea
 sandbox for the whole service to serve one admin feature, which is why the path unit is
 the default.
 
-### Disabling it again
+### Disabling it
 
 ```bash
-sudo systemctl disable --now threatfeed-apply-env.path
+sudo bash deploy/setup.sh --upgrade --disable-env-editor
+```
+
+Or by hand:
+
+```bash
+sudo systemctl disable --now threatfeed-apply-env.path threatfeed-restore-db.path
 sudo rm -f /etc/systemd/system/threatfeed-apply-env.{path,service} \
-           /usr/local/sbin/threatfeed-apply-env /etc/sudoers.d/threatfeed
+           /etc/systemd/system/threatfeed-restore-db.{path,service} \
+           /usr/local/sbin/threatfeed-apply-env /usr/local/sbin/threatfeed-restore-db \
+           /etc/sudoers.d/threatfeed
 sudo systemctl daemon-reload
 sudo sed -i 's|^TF_ALLOW_ENV_WRITE=.*|TF_ALLOW_ENV_WRITE=false|' /etc/threatfeed/threatfeed.env
 sudo systemctl restart threatfeed
@@ -173,7 +188,7 @@ never values. The audit log must not become a second place where tokens are read
 
 | What you see | Cause | Fix |
 |---|---|---|
-| `Pengeditan berkas .env lewat dashboard dinonaktifkan` | `TF_ALLOW_ENV_WRITE=false` | `sudo bash deploy/setup.sh --upgrade --enable-env-editor` |
+| `Pengeditan berkas .env lewat dashboard dinonaktifkan` | `TF_ALLOW_ENV_WRITE=false` (fitur dimatikan manual, atau instalasi lawas sebelum ini jadi default) | `sudo bash deploy/setup.sh --upgrade` |
 | `Helper /usr/local/sbin/threatfeed-apply-env tidak terpasang` | Feature enabled but helper missing | Same command; check `ls -l /usr/local/sbin/threatfeed-apply-env` |
 | `Password dashboard salah` (401) | Confirmation field wrong | Retype. Failed attempts are logged as `env_write_denied` |
 | Red text under a field | Per-field validation failure | The message states the expected format. Nothing was saved — validation is all-or-nothing |

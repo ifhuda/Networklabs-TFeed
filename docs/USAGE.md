@@ -337,7 +337,7 @@ connection leaves the old `-wal` journal pointing at the wrong database — and 
 application has no privilege to stop itself. Install it with:
 
 ```bash
-sudo bash deploy/setup.sh --upgrade --enable-env-editor
+sudo bash deploy/setup.sh --upgrade
 ```
 
 Without the helper, backups still work; only the Restore button is unavailable, and the
