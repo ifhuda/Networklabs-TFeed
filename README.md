@@ -56,7 +56,7 @@ keep confirming them, and the dashboard shows you when they stop.
 ## Quick start
 
 ```bash
-sudo unzip threatfeed.zip && cd threatfeed      # or: git clone && cd
+unzip threatfeed.zip && cd threatfeed      # or: git clone && cd
 sudo bash deploy/setup.sh
 ```
 
@@ -72,10 +72,10 @@ Non-interactive, for Ansible or repeat deployments:
 
 ```bash
 sudo bash deploy/setup.sh --yes \
-  --domain feed.example.com \ # optional
-  --soar-ip 192.168.10.20 \
+  --domain feed.example.com \
+  --soar-ip 10.10.10.20 \
   --fgt-ip 10.10.10.0/24 \
-  --tls existing --cert /etc/ssl/certs/feed.pem --key /etc/ssl/private/feed.key \ # optional
+  --tls existing --cert /etc/ssl/certs/feed.pem --key /etc/ssl/private/feed.key \
   --comments
 ```
 
@@ -89,6 +89,7 @@ sudo bash deploy/setup.sh --yes \
 | [docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md) | Automatic backups, restore, offline recovery |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | FortiDeceptor and generic third-party webhooks |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom-to-cause table drawn from real deployments |
+| [docs/id/PANDUAN-CEPAT.md](docs/id/PANDUAN-CEPAT.md) | Quick start dengan contoh FortiGate & webhook siap tempel (Bahasa Indonesia) |
 | [docs/id/PANDUAN.md](docs/id/PANDUAN.md) | Dokumentasi lengkap (Bahasa Indonesia) |
 | [docs/id/CHECKLIST-PRODUKSI.md](docs/id/CHECKLIST-PRODUKSI.md) | Runbook penerapan produksi |
 

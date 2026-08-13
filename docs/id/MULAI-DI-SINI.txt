@@ -95,6 +95,12 @@ UNTUK SERVER PRODUKSI
   pengerasan setelah jalan, dan prosedur upgrade.
 
 
+MULAI CEPAT (contoh siap tempel)
+────────────────────────────────────────────────────────────────────────────
+  docs/id/PANDUAN-CEPAT.md — instalasi, konfigurasi FortiGate, body FortiSOAR,
+  dan potongan webhook FortiDeceptor. Ganti <...> dengan nilai Anda.
+
+
 DOKUMENTASI LENGKAP
 ────────────────────────────────────────────────────────────────────────────
   README.md bagian 2  instalasi          bagian 6  fitur operasional
