@@ -274,6 +274,16 @@ tbody tr:last-child td{border-bottom:0}
 }
 .bkrow .tag.auto{color:var(--accent);border-color:var(--accent-dim)}
 .bkempty{padding:26px 0;text-align:center;color:var(--muted);font-size:12px}
+.soar-checklist{max-height:260px;overflow-y:auto}
+.soar-check{
+  display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid var(--line-soft);
+  cursor:pointer;
+}
+.soar-check:last-child{border-bottom:0}
+.soar-check input[type=checkbox]{flex:0 0 auto;width:15px;height:15px;accent-color:var(--accent)}
+.soar-check .nm{flex:1;min-width:0;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.soar-check .nm small{display:block;color:var(--muted);font-size:10.5px;font-family:var(--sans);margin-top:2px}
+.soar-check > small{flex:0 0 auto;font-size:10.5px;white-space:nowrap}
 .dropzone{
   border:1px dashed var(--line);border-radius:var(--r);padding:16px;text-align:center;
   color:var(--muted);font-size:12px;margin-top:14px;cursor:pointer;
@@ -338,6 +348,7 @@ tbody tr:last-child td{border-bottom:0}
     <span class="pill"><span class="dot" id="healthDot"></span><span id="healthTxt">menghubungkan…</span></span>
     <button class="btn ghost" id="btnSettings">Pengaturan</button>
     <button class="btn ghost" id="btnBackups">Backup</button>
+    <button class="btn ghost" id="btnSoar">Tarik FortiSOAR</button>
     <button class="btn ghost" id="btnSysConfig">Konfigurasi Sistem</button>
     <button class="btn ghost" id="btnRefresh">Muat ulang</button>
     <button class="btn ghost" id="btnPrune">Jalankan pruning</button>
@@ -472,6 +483,17 @@ tbody tr:last-child td{border-bottom:0}
       <span class="chg" id="sysChanged"></span>
       <button class="btn primary" id="btnSaveSys">Simpan &amp; Terapkan</button>
     </div>
+  </div>
+</div>
+
+<div class="drawer" id="soardrawer">
+  <div class="panel">
+    <div class="head">
+      <h2>Tarik dari FortiSOAR</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnCloseSoar">Tutup</button>
+    </div>
+    <div class="body" id="soarBody"></div>
   </div>
 </div>
 
@@ -1174,6 +1196,241 @@ function sysDirty(){
   const n = Object.keys(sysCollect()).length;
   $('#sysChanged').textContent = n ? `${n} perubahan belum disimpan` : '';
 }
+
+/* -------------------------------------------------------- tarik FortiSOAR (TAXII) */
+let soarState = {};   // nilai form + status per koleksi, dipertahankan antar render ulang
+
+function soarField(id, label, value, opts = {}) {
+  const type = opts.password ? 'password' : (opts.number ? 'number' : 'text');
+  return `<div class="field">
+      <div class="row"><label for="${id}">${esc(label)}</label></div>
+      <div class="inputrow">
+        <input id="${id}" type="${type}" value="${esc(value ?? '')}"
+               placeholder="${esc(opts.placeholder || '')}" autocomplete="off">
+      </div>
+      ${opts.help ? `<div class="help">${esc(opts.help)}</div>` : ''}
+    </div>`;
+}
+
+function soarReadForm() {
+  const ids = Array.from(document.querySelectorAll('.soar-coll:checked')).map(el => el.value);
+  return {
+    url: $('#soar_url')?.value.trim() || '',
+    key_name: $('#soar_key_name')?.value.trim() || '',
+    api_key: $('#soar_api_key')?.value.trim() || '',
+    verify_tls: $('#soar_verify')?.value !== 'false',
+    collection_ids: ids,
+    feed_name: $('#soar_feed_name')?.value.trim() || '',
+  };
+}
+
+function soarStatusUrl() {
+  // Sertakan koleksi yang sedang diketahui klien (dicentang atau baru
+  // ditemukan lewat Uji Koneksi) agar status ✓/✗ juga tampil untuk koleksi
+  // yang belum disimpan ke .env — itulah justru yang paling sering diuji
+  // lewat panel ini.
+  const known = new Set([...(soarState.selected || []),
+                         ...(soarState.discovered || []).map(c => c.id)]);
+  const ids = Array.from(known).join(',');
+  return '/api/v1/admin/soar/status' + (ids ? '?ids=' + encodeURIComponent(ids) : '');
+}
+
+async function openSoar() {
+  $('#soardrawer').classList.add('on');
+  $('#soarBody').innerHTML = '<div class="help" style="padding:20px 0">Memuat…</div>';
+  let st;
+  try { st = await api('/api/v1/admin/soar/status'); }
+  catch (err) { $('#soarBody').innerHTML = `<div class="notice off">${esc(err.message)}</div>`; return; }
+
+  // Hanya inisialisasi dari .env pada pemuatan PERTAMA. Setelah itu, centang
+  // pengguna dipertahankan sepanjang sesi browser meski drawer ditutup-buka —
+  // config belum tentu tersimpan ke .env (itu perlu langkah terpisah lewat
+  // Konfigurasi Sistem), jadi kehilangan centang setiap ditutup akan terasa
+  // seperti bug padahal murni akibat sumber kebenarannya belum disimpan.
+  const firstLoad = !soarState.selected;
+  soarState = firstLoad
+    ? { url: st.url, key_name: st.key_name, api_key: '', feed_name: st.feed_name || 'FortiSOAR-TAXII',
+        selected: new Set(st.collection_ids || []), discovered: [], verify_tls: st.verify_tls }
+    : soarState;   // pertahankan semua yang sudah diketik/dicentang di sesi ini
+  renderSoar(st);
+}
+
+function fmtAgo(iso) {
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'baru saja';
+  if (s < 3600) return Math.floor(s / 60) + ' menit lalu';
+  if (s < 86400) return Math.floor(s / 3600) + ' jam lalu';
+  return Math.floor(s / 86400) + ' hari lalu';
+}
+
+function soarPullLine(lp) {
+  if (!lp) return '<div class="bkempty">Belum pernah ditarik.</div>';
+  if (lp.ok) {
+    const d = lp.detail || {};
+    return `<div class="bkrow">
+        <span class="tag">berhasil</span>
+        <span class="nm">${d.inserted ?? 0} baru, ${d.updated ?? 0} diperbarui
+          <small>${esc(fmtAgo(lp.ts))} · dari ${d.raw_objects ?? '?'} objek STIX, ${d.pages ?? 1} halaman</small></span>
+      </div>`;
+  }
+  return `<div class="bkrow">
+      <span class="tag auto" style="background:var(--tlp-red)">gagal</span>
+      <span class="nm">${esc(fmtAgo(lp.ts))}<small>${esc(String(lp.detail))}</small></span>
+    </div>`;
+}
+
+function renderSoar(st) {
+  const enabledPill = st.enabled
+    ? `<span class="pill"><span class="dot"></span>Polling otomatis aktif — tiap ${st.poll_minutes} menit, ${st.collection_ids.length} koleksi</span>`
+    : `<span class="pill"><span class="dot down"></span>Polling otomatis nonaktif</span>`;
+
+  // Gabungkan koleksi hasil Uji Koneksi (yang punya judul) dengan ID yang
+  // sudah tersimpan di .env (mungkin belum di-refresh lewat Uji Koneksi di
+  // sesi ini, jadi belum punya judul) — supaya yang sudah dikonfigurasi tidak
+  // "hilang" dari daftar begitu panel dibuka ulang.
+  const known = new Map();
+  soarState.discovered.forEach(c => known.set(c.id, c.title));
+  (st.collection_ids || []).forEach(id => { if (!known.has(id)) known.set(id, id); });
+
+  const statusById = new Map((st.collections || []).map(c => [c.id, c.last_pull]));
+
+  const checklist = known.size === 0
+    ? '<div class="bkempty">Tekan "Uji Koneksi" untuk memuat daftar koleksi dari FortiSOAR.</div>'
+    : Array.from(known.entries()).map(([id, title]) => {
+        const checked = soarState.selected.has(id) ? ' checked' : '';
+        const lp = statusById.get(id);
+        const mini = lp
+          ? (lp.ok
+              ? `<small style="color:var(--accent)">✓ ${fmtAgo(lp.ts)}</small>`
+              : `<small style="color:var(--tlp-red)">✗ ${fmtAgo(lp.ts)}</small>`)
+          : '<small style="color:var(--dim)">belum ditarik</small>';
+        return `<label class="soar-check">
+            <input type="checkbox" class="soar-coll" value="${esc(id)}"${checked}>
+            <span class="nm">${esc(title)}<small>${esc(id)}</small></span>
+            ${mini}
+          </label>`;
+      }).join('');
+
+  $('#soarBody').innerHTML = `
+    <div class="notice">
+      Server ini bisa menarik indikator dari Outgoing TAXII Feed FortiSOAR
+      (Intelligence → Threat Feeds → TAXII Server), sebagai pelengkap ingest push
+      yang sudah ada — bukan penggantinya. Bisa lebih dari satu koleksi sekaligus,
+      masing-masing dengan jadwal tarikannya sendiri.
+    </div>
+    ${enabledPill}
+
+    <section class="sgroup"><h3>Koneksi</h3>
+      ${soarField('soar_url', 'Server Address (api-root)', soarState.url,
+        { placeholder: 'https://192.168.120.9:443/api/taxii/1/',
+          help: 'Dari FortiSOAR: TAXII Server Details → Server Address.' })}
+      ${soarField('soar_key_name', 'Nama API Key', soarState.key_name,
+        { placeholder: 'mis. threatfeed-svc' })}
+      ${soarField('soar_api_key', 'API Key', soarState.api_key || '',
+        { password: true,
+          placeholder: st.api_key_set ? 'tersimpan — kosongkan untuk memakai yang tersimpan' : 'belum diisi' })}
+      <div class="field">
+        <div class="row"><label for="soar_verify">Verifikasi sertifikat TLS</label></div>
+        <div class="inputrow">
+          <select id="soar_verify">
+            <option value="true"${soarState.verify_tls !== false ? ' selected' : ''}>true</option>
+            <option value="false"${soarState.verify_tls === false ? ' selected' : ''}>false</option>
+          </select>
+        </div>
+        <div class="help">Nonaktifkan hanya untuk lab dengan sertifikat self-signed.</div>
+      </div>
+      <div class="inputrow" style="margin-top:4px">
+        <button class="btn" id="btnSoarTest">Uji Koneksi</button>
+        <span class="serr" id="soarTestMsg"></span>
+      </div>
+    </section>
+
+    <section class="sgroup"><h3>Koleksi (centang satu atau lebih)</h3>
+      <div class="soar-checklist">${checklist}</div>
+      <div class="help">Daftar dataset dari FortiSOAR: Threat Feeds → Available Datasets.
+        Tanda ✓/✗ menunjukkan hasil tarikan terakhir untuk koleksi itu.</div>
+    </section>
+
+    <section class="sgroup"><h3>Feed lokal</h3>
+      ${soarField('soar_feed_name', 'Nama feed lokal', soarState.feed_name,
+        { help: 'Label sumber di dashboard dan filter feed FortiGate (?feed_name=...) — dipakai untuk semua koleksi yang dicentang.' })}
+    </section>
+
+    <section class="sgroup">
+      <div class="inputrow">
+        <button class="btn primary" id="btnSoarPullNow">Tarik yang Dicentang</button>
+        <span class="serr" id="soarPullMsg"></span>
+      </div>
+      <div class="help">
+        Menarik semua koleksi yang dicentang sekaligus, segera, tanpa menunggu jadwal.
+        Satu koleksi gagal tidak menghentikan yang lain. Untuk mengaktifkan polling
+        otomatis dan menyimpan kredensial secara permanen, salin ID koleksi yang
+        dicentang (dipisah koma) ke <b>Konfigurasi Sistem → Tarik dari FortiSOAR</b> —
+        panel ini hanya untuk menguji dan menarik on-demand.
+      </div>
+    </section>`;
+
+  // Simpan centang ke soarState setiap kali berubah, supaya tidak hilang
+  // ketika renderSoar dipanggil ulang setelah Tarik/Uji Koneksi.
+  document.querySelectorAll('.soar-coll').forEach(el => el.onchange = () => {
+    if (el.checked) soarState.selected.add(el.value); else soarState.selected.delete(el.value);
+  });
+
+  $('#btnSoarTest').onclick = soarTestConnection;
+  $('#btnSoarPullNow').onclick = soarPullNow;
+}
+
+async function soarTestConnection() {
+  const f = soarReadForm();
+  if (!f.url) { $('#soarTestMsg').textContent = 'Isi Server Address dulu.'; return; }
+  $('#soarTestMsg').textContent = 'Menghubungi server…';
+  $('#btnSoarTest').disabled = true;
+  try {
+    const r = await api('/api/v1/admin/soar/test-connection', { method: 'POST', body: JSON.stringify(f) });
+    soarState = { ...soarState, url: f.url, key_name: f.key_name, api_key: f.api_key,
+                  verify_tls: f.verify_tls, discovered: r.collections };
+    $('#soarTestMsg').textContent = '';
+    toast(`Terhubung${r.server_title ? ' — ' + r.server_title : ''}. ${r.collections.length} koleksi ditemukan.`);
+    renderSoar(await api(soarStatusUrl()));
+  } catch (err) {
+    $('#soarTestMsg').textContent = err.message;
+  } finally {
+    $('#btnSoarTest').disabled = false;
+  }
+}
+
+async function soarPullNow() {
+  const f = soarReadForm();
+  if (!f.url || f.collection_ids.length === 0) {
+    $('#soarPullMsg').textContent = 'Isi Server Address dan centang minimal satu koleksi (tekan Uji Koneksi dulu bila daftarnya belum muncul).';
+    return;
+  }
+  $('#soarPullMsg').textContent = `Menarik ${f.collection_ids.length} koleksi…`;
+  $('#btnSoarPullNow').disabled = true;
+  try {
+    const r = await api('/api/v1/admin/soar/pull-now', { method: 'POST', body: JSON.stringify(f) });
+    soarState.url = f.url; soarState.key_name = f.key_name; soarState.api_key = f.api_key;
+    soarState.feed_name = f.feed_name; soarState.verify_tls = f.verify_tls;
+    const okList = r.collections.map(c => `${c.collection_id}: +${c.inserted}/${c.updated}`);
+    const failList = r.errors.map(e => `${e.collection_id} gagal`);
+    toast(`Ditarik: ${r.inserted} baru, ${r.updated} diperbarui dari ${r.collections.length} koleksi`
+      + (r.errors.length ? `, ${r.errors.length} gagal.` : '.'));
+    $('#soarPullMsg').textContent = r.errors.length
+      ? `Sebagian gagal — ${failList.join(', ')}. Yang berhasil: ${okList.join(', ') || '(tidak ada)'}.`
+      : '';
+    renderSoar(await api(soarStatusUrl()));
+    loadRows();   // segarkan tabel dashboard bila drawer ditutup
+  } catch (err) {
+    $('#soarPullMsg').textContent = err.message;
+  } finally {
+    $('#btnSoarPullNow').disabled = false;
+  }
+}
+
+$('#btnSoar').onclick = openSoar;
+$('#btnCloseSoar').onclick = () => $('#soardrawer').classList.remove('on');
+$('#soardrawer').onclick = e => { if (e.target.id === 'soardrawer') $('#soardrawer').classList.remove('on'); };
 
 $('#btnSysConfig').onclick = openSysConfig;
 $('#btnCloseSys').onclick = () => $('#sysdrawer').classList.remove('on');

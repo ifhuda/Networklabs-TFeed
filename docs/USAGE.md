@@ -87,6 +87,17 @@ succeeds, and `errors` tells you which lines to fix.
 
 ---
 
+## FortiSOAR — pulling indicators (TAXII 2.1)
+
+The reverse direction: instead of waiting for a playbook to push, the server can connect
+to FortiSOAR's Outgoing TAXII Feed (Intelligence → Threat Feeds → TAXII Server) and pull
+indicators on a schedule or on demand. Open **Tarik FortiSOAR** in the header to test a
+connection, browse collections, and pull immediately — full detail, including scheduled
+polling and the STIX parsing quirks handled, in
+[SOAR-TAXII-PULL.md](SOAR-TAXII-PULL.md).
+
+---
+
 ## FortiGate — consuming the feed
 
 ```

@@ -304,6 +304,49 @@ SCHEMA: dict[str, dict] = {
         help="Harus dapat ditulis akun service. Unit systemd hanya mengizinkan "
              "penulisan di /var/lib/threatfeed — path lain perlu ReadWritePaths tambahan.",
         danger="Mengubah path tidak memindahkan backup lama."),
+    "TF_SOAR_TAXII_ENABLED": dict(
+        group="Tarik dari FortiSOAR", label="Aktifkan penarikan TAXII", kind="bool",
+        validate=v_bool, default="false",
+        help="Bila aktif, server menarik indikator dari koleksi TAXII FortiSOAR "
+             "secara berkala — arah sebaliknya dari ingest push yang biasa."),
+    "TF_SOAR_TAXII_URL": dict(
+        group="Tarik dari FortiSOAR", label="Server Address (api-root)", kind="text",
+        validate=v_text(256), default="",
+        help="Dari FortiSOAR: Threat Feeds -> TAXII Server -> Server Address. "
+             "Contoh: https://192.168.120.9:443/api/taxii/1/"),
+    "TF_SOAR_TAXII_KEY_NAME": dict(
+        group="Tarik dari FortiSOAR", label="Nama API Key", kind="text",
+        validate=v_text(128), default="",
+        help="Username autentikasi Basic — nama key di FortiSOAR, bukan key itu sendiri."),
+    "TF_SOAR_TAXII_API_KEY": dict(
+        group="Tarik dari FortiSOAR", label="API Key", kind="text",
+        validate=v_text(256), secret=True, default="",
+        help="Password autentikasi Basic. Dibuat di FortiSOAR: Settings -> API Key."),
+    "TF_SOAR_TAXII_COLLECTION_ID": dict(
+        group="Tarik dari FortiSOAR", label="ID Koleksi (bisa lebih dari satu)", kind="text",
+        validate=v_text(512), default="",
+        help="Satu atau lebih UUID koleksi TAXII, dipisah koma: "
+             "25d1110d-...,34a3f04d-.... Setiap koleksi punya jadwal tarikannya "
+             "sendiri. Isi lewat panel Tarik FortiSOAR -> Uji Koneksi, centang "
+             "koleksi yang diinginkan, bukan diketik manual di sini."),
+    "TF_SOAR_TAXII_COLLECTION_NAME": dict(
+        group="Tarik dari FortiSOAR", label="Nama Koleksi", kind="text",
+        validate=v_text(200), default="",
+        help="Hanya untuk tampilan di dashboard — tidak memengaruhi penarikan."),
+    "TF_SOAR_TAXII_FEED_NAME": dict(
+        group="Tarik dari FortiSOAR", label="Nama feed lokal", kind="text",
+        validate=v_text(64, allow_empty=False), default="FortiSOAR-TAXII",
+        help="Label sumber indikator hasil tarikan ini di dashboard dan filter feed FortiGate."),
+    "TF_SOAR_TAXII_POLL_MINUTES": dict(
+        group="Tarik dari FortiSOAR", label="Interval polling (menit)", kind="int",
+        validate=v_int(1, 1440), default="15",
+        help="Jeda antar penarikan. FortiSOAR juga punya beban dari sisi query — "
+             "jangan terlalu agresif pada koleksi besar."),
+    "TF_SOAR_TAXII_VERIFY_TLS": dict(
+        group="Tarik dari FortiSOAR", label="Verifikasi sertifikat TLS", kind="bool",
+        validate=v_bool, default="true",
+        danger="Nonaktifkan hanya untuk lab dengan sertifikat self-signed FortiSOAR. "
+               "API key dikirim lewat koneksi itu — jangan matikan di jalur produksi."),
     "TF_DEFAULT_TYPE": dict(
         group="Retensi & Default Entri", label="Type", kind="text",
         validate=v_text(64, allow_empty=False), default="IP Address",
@@ -329,7 +372,8 @@ SCHEMA: dict[str, dict] = {
 }
 
 GROUP_ORDER = ["Identitas & Storage", "Kredensial & Keamanan", "Kebijakan Feed",
-               "Kontrol Akses Jaringan", "Backup & Pemulihan", "Retensi & Default Entri"]
+               "Kontrol Akses Jaringan", "Backup & Pemulihan", "Tarik dari FortiSOAR",
+               "Retensi & Default Entri"]
 
 # Perubahan yang membuat operator berpotensi mengunci diri sendiri.
 LOCKOUT_KEYS = {"TF_ADMIN_PASSWORD", "TF_SECRET_KEY", "TF_COOKIE_SECURE", "TF_DB_PATH"}

@@ -87,6 +87,7 @@ sudo bash deploy/setup.sh --yes \
 | [docs/USAGE.md](docs/USAGE.md) | FortiSOAR payloads, FortiGate configuration, CLI, dashboard |
 | [docs/SYSTEM-CONFIG.md](docs/SYSTEM-CONFIG.md) | Admin page that rewrites `.env`, sudoers rule, recovery |
 | [docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md) | Automatic backups, restore, offline recovery |
+| [docs/SOAR-TAXII-PULL.md](docs/SOAR-TAXII-PULL.md) | Pull indicators from FortiSOAR's TAXII feed |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | FortiDeceptor and generic third-party webhooks |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom-to-cause table drawn from real deployments |
 | [docs/id/PANDUAN-CEPAT.md](docs/id/PANDUAN-CEPAT.md) | Quick start dengan contoh FortiGate & webhook siap tempel (Bahasa Indonesia) |
