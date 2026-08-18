@@ -81,6 +81,23 @@ BACKUP_INTERVAL_HOURS = _int("TF_BACKUP_INTERVAL_HOURS", 24)
 BACKUP_KEEP = _int("TF_BACKUP_KEEP", 14)
 BACKUP_DIR = os.getenv("TF_BACKUP_DIR", "") or str(Path(DB_PATH).parent / "backups")
 
+# --- Tarik dari FortiSOAR (TAXII 2.1) --------------------------------------
+# Arah sebaliknya dari ingest: server ini yang aktif menarik indikator dari
+# koleksi TAXII FortiSOAR, bukan menunggu playbook mem-POST.
+SOAR_TAXII_ENABLED = _bool("TF_SOAR_TAXII_ENABLED", False)
+SOAR_TAXII_URL = os.getenv("TF_SOAR_TAXII_URL", "").strip()
+SOAR_TAXII_KEY_NAME = os.getenv("TF_SOAR_TAXII_KEY_NAME", "").strip()
+SOAR_TAXII_API_KEY = os.getenv("TF_SOAR_TAXII_API_KEY", "").strip()
+SOAR_TAXII_COLLECTION_ID = os.getenv("TF_SOAR_TAXII_COLLECTION_ID", "").strip()
+# Satu variabel, banyak ID dipisah koma: "id-1, id-2, id-3". Setiap koleksi
+# tetap punya cursor added_after sendiri (dilacak lewat collection_id di jejak
+# audit), jadi menambah koleksi kedua tidak memengaruhi jadwal koleksi pertama.
+SOAR_TAXII_COLLECTION_IDS = [c.strip() for c in SOAR_TAXII_COLLECTION_ID.split(",") if c.strip()]
+SOAR_TAXII_COLLECTION_NAME = os.getenv("TF_SOAR_TAXII_COLLECTION_NAME", "").strip()
+SOAR_TAXII_FEED_NAME = os.getenv("TF_SOAR_TAXII_FEED_NAME", "") or "FortiSOAR-TAXII"
+SOAR_TAXII_POLL_MINUTES = _int("TF_SOAR_TAXII_POLL_MINUTES", 15)
+SOAR_TAXII_VERIFY_TLS = _bool("TF_SOAR_TAXII_VERIFY_TLS", True)
+
 # --- Nilai default entri ---------------------------------------------------
 DEFAULT_TYPE = os.getenv("TF_DEFAULT_TYPE", "IP Address")
 DEFAULT_SEVERITY = os.getenv("TF_DEFAULT_SEVERITY", "Medium")

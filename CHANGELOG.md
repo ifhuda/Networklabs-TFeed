@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.3.3
+
+### Fixed
+- **Critical: a single non-IP object in a TAXII collection crashed the entire pull
+  cycle with a 500 error**, instead of being skipped like other non-IP objects.
+  FortiGuard Outbreak collections routinely mix IPv4 indicators with file-hash
+  indicators (`typeOfFeed: "FileHash-SHA256"`) in the same collection; the hash
+  string reached `normalize_ip`, which raised a raw `ValueError` from Python's
+  `ipaddress` module that only `NormalizeError` was being caught for. Confirmed
+  against the exact production traceback and payload. Every mixed IP+hash
+  collection was previously unpullable in its entirety, regardless of how many
+  valid IPs it also contained.
+- Root-caused in `normalize_ip` itself (`app/normalize.py`), not just patched at the
+  TAXII call site: the function is documented to always raise `NormalizeError` for
+  invalid input, but its final branch (and, less commonly, its range-parsing branch)
+  could leak a bare `ValueError`. Every call site across the codebase already
+  followed the "catch `NormalizeError`" convention; this was the one place that
+  didn't hold. Now genuinely never leaks `ValueError` — confirmed with malformed
+  ranges, malformed CIDR, and non-IP strings — while preserving the specific
+  "range terbalik" / "range campur IPv4/IPv6" messages that also raise
+  `NormalizeError` internally.
+
+## 1.3.2
+
+### Changed
+- **Severity from FortiSOAR TAXII pulls now maps to the standard Critical/High/
+  Medium/Low/Info scale**, instead of copying the raw `reputation` text (which
+  previously produced non-standard values like "Malicious" in the Severity column).
+  `Malicious`→Critical, `Suspicious`→High, `Unknown`→Medium, known-clean values
+  (`Known Good`/`Benign`/`Clean`/`Trusted`/`Safe`/`Whitelisted`)→Info, anything
+  unrecognised→Medium. Type still shows the raw `reputation` text as before — only
+  Severity is normalised, so the original FortiSOAR label stays visible while
+  Severity becomes comparable across every other source in the dashboard.
+
+## 1.3.1
+
+### Fixed
+- **Field mapping for FortiSOAR's actual TAXII payload.** The Outgoing TAXII Feed does
+  not send standard STIX 2.1 — it sends FortiSOAR's own `ThreatIntel` shape, with
+  `reputation`, `source`, and `tLP` (capital L) as direct object fields, while
+  `pattern` and `labels` are always empty. Treating it as standard STIX left every
+  pulled indicator with `type=Indicator`, `comment=<the IP itself>` (from the `name`
+  field), and `source=<local feed name>` instead of the real intel source. Now mapped
+  correctly: Type and Severity from `reputation`, Source from `source`, Comment as
+  `source — reputation`, TLP from `tLP`. Confirmed against real payloads from
+  production `curl` output. Servers sending genuine STIX 2.1 still fall back to
+  `labels`/`x_severity`/`x_tlp` as before.
+
+## 1.3.0
+
+### Added
+- **Multiple TAXII collections at once.** `TF_SOAR_TAXII_COLLECTION_ID` now accepts a
+  comma-separated list. Each collection tracks its own `added_after` cursor from the
+  audit trail, so adding a collection never disturbs another's schedule, and one
+  collection failing never blocks the rest on the same poll cycle. The "Tarik
+  FortiSOAR" panel is now a checklist (was a single-select dropdown): tick any number
+  of collections and pull them together, with a per-collection ✓/✗ result.
+- `/api/v1/admin/soar/pull-now` accepts `collection_ids` (array); aggregates totals
+  while reporting each collection's own result, and only fails the whole request if
+  every collection in the batch failed.
+- `/api/v1/admin/soar/status` accepts `?ids=` so the panel can show pull status for
+  collections that are only being tested ad hoc — not yet saved to `.env`.
+
+### Fixed
+- The status panel previously only reported pull results for collections already
+  saved to `.env`; a collection just pulled via the on-demand panel showed "never
+  pulled" even immediately after a successful pull.
+
+## 1.2.0
+
+### Added
+- **Pull from FortiSOAR via TAXII 2.1** (`app/taxii_client.py`), complementing the
+  existing push ingest. New "Tarik FortiSOAR" panel: test a connection, browse
+  collections, and pull on demand — all before anything is saved to `.env`. Scheduled
+  automatic polling via `TF_SOAR_TAXII_ENABLED` and related config, on its own asyncio
+  task independent of the TTL pruner so a slow FortiSOAR server never delays it.
+  Parses STIX `pattern` fields and falls back to FortiSOAR's non-standard raw `value`
+  field when present. Cursor (`added_after`) is tracked per collection from the audit
+  trail, not globally, so testing one collection never skips indicators in another.
+
 ## 1.1.0
 
 ### Fixed

@@ -32,29 +32,41 @@ class NormalizeError(ValueError):
 
 # ---------------------------------------------------------------- IP handling
 def normalize_ip(raw: Any) -> str:
-    """Terima IPv4/IPv6 tunggal, CIDR, atau range. Kembalikan bentuk kanonik FortiGate."""
+    """Terima IPv4/IPv6 tunggal, CIDR, atau range. Kembalikan bentuk kanonik FortiGate.
+
+    Selalu melempar NormalizeError untuk input tidak valid, tidak pernah ValueError
+    mentah dari modul ipaddress — pemanggil di seluruh codebase menangkap
+    NormalizeError secara konsisten, dan satu baris yang lolos tanpa dibungkus
+    berarti satu input rusak bisa men-crash keseluruhan proses pemanggilnya
+    (pernah terjadi: hash SHA-256 di tengah koleksi TAXII bercampur IP).
+    """
     if raw is None:
         raise NormalizeError("nilai IP kosong")
     s = str(raw).strip().strip('"').strip("'")
     if not s:
         raise NormalizeError("nilai IP kosong")
 
-    m = _RANGE_RE.match(s)
-    if m:
-        lo, hi = ipaddress.ip_address(m.group(1)), ipaddress.ip_address(m.group(2))
-        if lo.version != hi.version:
-            raise NormalizeError(f"range campur IPv4/IPv6: {s}")
-        if int(hi) < int(lo):
-            raise NormalizeError(f"range terbalik: {s}")
-        return f"{lo.compressed}-{hi.compressed}"
+    try:
+        m = _RANGE_RE.match(s)
+        if m:
+            lo, hi = ipaddress.ip_address(m.group(1)), ipaddress.ip_address(m.group(2))
+            if lo.version != hi.version:
+                raise NormalizeError(f"range campur IPv4/IPv6: {s}")
+            if int(hi) < int(lo):
+                raise NormalizeError(f"range terbalik: {s}")
+            return f"{lo.compressed}-{hi.compressed}"
 
-    if "/" in s:
-        net = ipaddress.ip_network(s, strict=False)
-        if net.prefixlen == net.max_prefixlen:
-            return net.network_address.compressed
-        return net.with_prefixlen
+        if "/" in s:
+            net = ipaddress.ip_network(s, strict=False)
+            if net.prefixlen == net.max_prefixlen:
+                return net.network_address.compressed
+            return net.with_prefixlen
 
-    return ipaddress.ip_address(s).compressed
+        return ipaddress.ip_address(s).compressed
+    except NormalizeError:
+        raise   # pesan spesifik (range terbalik/campur) tidak boleh ketiban pesan generik
+    except ValueError as exc:
+        raise NormalizeError(f"bukan alamat IP: {s!r}") from exc
 
 
 def is_routable(ip_str: str) -> bool:

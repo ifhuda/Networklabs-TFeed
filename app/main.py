@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import backup as backup_mod
 from . import config, crud, envfile, security, settings as settings_store
+from . import taxii_client
 from .database import init_db, utcnow
 from .normalize import NormalizeError, deep_find_ips, flatten, parse_payload
 
@@ -53,6 +54,94 @@ async def _pruner():
             log.exception("prune gagal")
 
 
+def _last_pull_ts_for(collection_id: str) -> str | None:
+    """Cursor `added_after` per-koleksi, bukan global.
+
+    Bila lebih dari satu koleksi pernah ditarik (mis. lewat 'Tarik Sekarang' yang
+    menguji koleksi berbeda-beda), memakai timestamp tarikan TERAKHIR APA PUN akan
+    salah menerapkan cursor koleksi lain ke koleksi yang sedang ditarik — cocok
+    kebetulan bila hanya ada satu koleksi yang pernah dikonfigurasi, tapi diam-diam
+    salah begitu ada yang kedua. Cari beberapa event terakhir dan pakai yang
+    collection_id-nya cocok.
+    """
+    for row in crud.audit_tail(20, "soar_pull"):
+        if row["status_code"] >= 400:
+            continue
+        try:
+            detail = json.loads(row["detail"])
+        except (ValueError, TypeError):
+            continue
+        if detail.get("collection_id") == collection_id:
+            return row["ts"]
+    return None
+
+
+def _run_soar_pull(collection_id: str, added_after: str | None) -> dict:
+    """Tarik satu siklus dari SATU koleksi TAXII dan upsert hasilnya.
+
+    Fungsi sinkron dipanggil lewat asyncio.to_thread — httpx.Client dan crud
+    keduanya blocking, dan menjalankannya di loop event akan menahan seluruh
+    server selama request ke FortiSOAR berlangsung.
+    """
+    result = taxii_client.pull_collection(
+        base_url=config.SOAR_TAXII_URL, key_name=config.SOAR_TAXII_KEY_NAME,
+        api_key=config.SOAR_TAXII_API_KEY, collection_id=collection_id,
+        feed_name=config.SOAR_TAXII_FEED_NAME, added_after=added_after,
+        verify_tls=config.SOAR_TAXII_VERIFY_TLS)
+    stats = crud.upsert_many(result["records"]) if result["records"] else \
+        {"inserted": 0, "updated": 0, "deduplicated": 0}
+    summary = {"collection_id": collection_id,
+               "raw_objects": result["raw_objects"], "pages": result["pages"], **stats}
+    crud.log_event("soar_pull", actor="system", entries_ok=stats["inserted"] + stats["updated"],
+                   detail=json.dumps(summary))
+    return summary
+
+
+async def _soar_poller():
+    """Siklus terpisah dari pruner: TAXII server yang lambat tidak boleh menunda TTL.
+
+    Beberapa koleksi bisa dikonfigurasi sekaligus (dipisah koma). Masing-masing
+    dicek kelayakan jadwalnya sendiri-sendiri per tick 60 detik — koleksi yang
+    baru ditambahkan tidak menunggu koleksi lain, dan satu koleksi yang gagal
+    tidak menghalangi koleksi lain ditarik pada tick yang sama.
+    """
+    last_pull_iso: dict[str, str] = {}   # cache in-memory per collection_id
+    while True:
+        try:
+            await asyncio.sleep(60)
+            if not (config.SOAR_TAXII_ENABLED and config.SOAR_TAXII_URL
+                    and config.SOAR_TAXII_COLLECTION_IDS):
+                continue
+
+            for cid in config.SOAR_TAXII_COLLECTION_IDS:
+                # Cek jadwal dari waktu tarikan terakhir tersimpan, bukan timer
+                # di memori — sama seperti auto-backup, ini menjaga interval
+                # tetap benar meski service sering restart.
+                ts = last_pull_iso.get(cid)
+                if ts is None:
+                    ts = await asyncio.to_thread(_last_pull_ts_for, cid)
+                due = True
+                if ts:
+                    elapsed = (datetime.now(timezone.utc)
+                              - datetime.fromisoformat(ts.replace("Z", "+00:00")))
+                    due = elapsed.total_seconds() >= config.SOAR_TAXII_POLL_MINUTES * 60
+                if not due:
+                    continue
+                try:
+                    summary = await asyncio.to_thread(_run_soar_pull, cid, ts)
+                    last_pull_iso[cid] = utcnow()
+                    log.info("tarik TAXII FortiSOAR (%s): %s", cid, summary)
+                except taxii_client.TaxiiError as exc:
+                    log.warning("tarik TAXII gagal (%s): %s", cid, exc)
+                    await asyncio.to_thread(
+                        crud.log_event, "soar_pull", actor="system", status_code=502,
+                        detail=json.dumps({"collection_id": cid, "error": str(exc)[:400]}))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("penjadwal tarik TAXII gagal tak terduga")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -63,10 +152,14 @@ async def lifespan(app: FastAPI):
         log.warning("TF_INGEST_TOKENS kosong — endpoint /api/v1/ingest akan menolak semua request.")
     if not config.ADMIN_PASSWORD:
         log.warning("TF_ADMIN_PASSWORD kosong — login dashboard tidak dapat dilakukan.")
-    tasks = [asyncio.create_task(_pruner())]
+    tasks = [asyncio.create_task(_pruner()), asyncio.create_task(_soar_poller())]
     if config.BACKUP_ENABLED:
         log.info("backup otomatis aktif: tiap %s jam, simpan %s, dir=%s",
                  config.BACKUP_INTERVAL_HOURS, config.BACKUP_KEEP, config.BACKUP_DIR)
+    if config.SOAR_TAXII_ENABLED:
+        log.info("tarik TAXII FortiSOAR aktif: tiap %s menit, %d koleksi (%s)",
+                 config.SOAR_TAXII_POLL_MINUTES, len(config.SOAR_TAXII_COLLECTION_IDS),
+                 ", ".join(config.SOAR_TAXII_COLLECTION_IDS) or "belum diatur")
     log.info("%s siap. db=%s ttl=%sd", config.APP_NAME, config.DB_PATH, config.TTL_DAYS)
     yield
     for task in tasks:
@@ -734,6 +827,178 @@ async def export_backup(request: Request, actor: str = Depends(security.require_
         background.add_task(shutil.rmtree, tmp.parent, ignore_errors=True)
     return FileResponse(str(tmp), media_type="application/octet-stream",
                         filename=tmp.name, background=background)
+
+
+# =============================================== TARIK DARI FORTISOAR (TAXII)
+class SoarTestBody(BaseModel):
+    url: str = ""
+    key_name: str = ""
+    api_key: str = ""
+    verify_tls: bool = True
+
+
+class SoarPullBody(BaseModel):
+    url: str = ""
+    key_name: str = ""
+    api_key: str = ""
+    collection_id: str = ""          # kompatibilitas mundur: satu ID
+    collection_ids: list[str] = []   # dipilih via checkbox — bisa lebih dari satu
+    feed_name: str = ""
+    verify_tls: bool = True
+    full_history: bool = False   # abaikan cursor added_after; tarik ulang semua
+
+    def resolved_ids(self, fallback: list[str]) -> list[str]:
+        if self.collection_ids:
+            return [c.strip() for c in self.collection_ids if c.strip()]
+        if self.collection_id.strip():
+            return [self.collection_id.strip()]
+        return fallback
+
+
+def _soar_field(body_val: str, config_val: str) -> str:
+    """Body request menang bila diisi — dipakai untuk uji koneksi sebelum disimpan."""
+    return body_val.strip() if body_val.strip() else config_val
+
+
+def _pull_detail_for(collection_id: str, limit: int = 30) -> dict | None:
+    """Hasil tarikan terakhir untuk SATU koleksi, dari jejak audit."""
+    for row in crud.audit_tail(limit, "soar_pull"):
+        try:
+            detail = json.loads(row["detail"]) if row["detail"].startswith("{") else {}
+        except (ValueError, TypeError):
+            detail = {}
+        if detail.get("collection_id") == collection_id:
+            return {"ts": row["ts"], "ok": row["status_code"] < 400,
+                    "detail": detail if row["status_code"] < 400 else detail.get("error", row["detail"])}
+    return None
+
+
+@app.get("/api/v1/admin/soar/status", tags=["soar"])
+async def soar_status(ids: str = "", actor: str = Depends(security.require_session)):
+    """Ringkasan konfigurasi + hasil tarikan terakhir PER KOLEKSI, untuk panel dashboard.
+
+    `ids` (opsional, dipisah koma): koleksi tambahan yang ingin dicek statusnya di
+    luar yang tersimpan di .env — dipakai panel untuk menampilkan ✓/✗ pada koleksi
+    yang baru ditemukan lewat Uji Koneksi atau ditarik on-demand, sebelum apa pun
+    disimpan ke konfigurasi permanen.
+    """
+    last = await asyncio.to_thread(crud.audit_tail, 1, "soar_pull")
+    last_pull = None
+    if last:
+        row = last[0]
+        try:
+            detail = json.loads(row["detail"]) if row["detail"].startswith("{") else {}
+        except (ValueError, TypeError):
+            detail = {}
+        last_pull = {
+            "ts": row["ts"], "ok": row["status_code"] < 400,
+            "detail": detail if row["status_code"] < 400 else row["detail"],
+        }
+
+    extra = [c.strip() for c in ids.split(",") if c.strip()]
+    configured = config.SOAR_TAXII_COLLECTION_IDS
+    all_ids = list(dict.fromkeys(configured + extra))   # gabung, buang duplikat, jaga urutan
+    per_collection = await asyncio.to_thread(
+        lambda: [{"id": cid, "last_pull": _pull_detail_for(cid)} for cid in all_ids])
+
+    return {
+        "enabled": config.SOAR_TAXII_ENABLED,
+        "url": config.SOAR_TAXII_URL,
+        "key_name": config.SOAR_TAXII_KEY_NAME,
+        "api_key_set": bool(config.SOAR_TAXII_API_KEY),
+        "collection_id": config.SOAR_TAXII_COLLECTION_ID,     # baris .env mentah, apa adanya
+        "collection_ids": configured,                          # sudah dipecah & dibersihkan
+        "collection_name": config.SOAR_TAXII_COLLECTION_NAME,
+        "collections": per_collection,
+        "feed_name": config.SOAR_TAXII_FEED_NAME,
+        "poll_minutes": config.SOAR_TAXII_POLL_MINUTES,
+        "verify_tls": config.SOAR_TAXII_VERIFY_TLS,
+        "last_pull": last_pull,
+    }
+
+
+@app.post("/api/v1/admin/soar/test-connection", tags=["soar"])
+async def soar_test_connection(body: SoarTestBody, request: Request,
+                               actor: str = Depends(security.require_session)):
+    """Discovery + daftar collections. Dipakai sebelum menyimpan .env, jadi menerima
+    nilai dari form langsung tanpa menulis apa pun ke konfigurasi."""
+    url = _soar_field(body.url, config.SOAR_TAXII_URL)
+    key_name = _soar_field(body.key_name, config.SOAR_TAXII_KEY_NAME)
+    api_key = _soar_field(body.api_key, config.SOAR_TAXII_API_KEY)
+    if not url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Server Address belum diisi")
+
+    ip, ua = _req_meta(request)
+    try:
+        result = await asyncio.to_thread(
+            taxii_client.test_connection, url, key_name, api_key, body.verify_tls)
+    except taxii_client.TaxiiError as exc:
+        await asyncio.to_thread(crud.log_event, "soar_test", actor, ip, ua,
+                                status_code=502, detail=str(exc)[:500])
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+
+    await asyncio.to_thread(crud.log_event, "soar_test", actor, ip, ua,
+                            entries_ok=len(result["collections"]),
+                            detail=f"koleksi ditemukan: {len(result['collections'])}")
+    return result
+
+
+@app.post("/api/v1/admin/soar/pull-now", tags=["soar"])
+async def soar_pull_now(body: SoarPullBody, request: Request,
+                        actor: str = Depends(security.require_session)):
+    """Tarik satu atau lebih koleksi segera, di luar jadwal. Nilai dari body (bila
+    diisi) menang atas konfigurasi tersimpan — berguna untuk menguji sebelum disimpan.
+    Setiap koleksi diproses dan dicatat terpisah; satu koleksi gagal tidak
+    menghentikan sisanya — kegagalan dikumpulkan lalu dilaporkan bersama hasil
+    yang berhasil, supaya satu URL yang salah tidak menyembunyikan hasil yang lain.
+    """
+    url = _soar_field(body.url, config.SOAR_TAXII_URL)
+    key_name = _soar_field(body.key_name, config.SOAR_TAXII_KEY_NAME)
+    api_key = _soar_field(body.api_key, config.SOAR_TAXII_API_KEY)
+    feed_name = _soar_field(body.feed_name, config.SOAR_TAXII_FEED_NAME) or "FortiSOAR-TAXII"
+    ids = body.resolved_ids(config.SOAR_TAXII_COLLECTION_IDS)
+    if not url or not ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Server Address dan minimal satu Koleksi wajib diisi")
+
+    ip, ua = _req_meta(request)
+    results, errors = [], []
+    totals = {"inserted": 0, "updated": 0, "deduplicated": 0, "raw_objects": 0}
+
+    for cid in ids:
+        added_after = None
+        if not body.full_history:
+            added_after = await asyncio.to_thread(_last_pull_ts_for, cid)
+        try:
+            result = await asyncio.to_thread(
+                taxii_client.pull_collection, url, key_name, api_key, cid,
+                feed_name, added_after, body.verify_tls)
+        except taxii_client.TaxiiError as exc:
+            await asyncio.to_thread(crud.log_event, "soar_pull", actor, ip, ua,
+                                    status_code=502,
+                                    detail=json.dumps({"collection_id": cid, "error": str(exc)[:400]}))
+            errors.append({"collection_id": cid, "error": str(exc)})
+            continue
+
+        stats = await asyncio.to_thread(crud.upsert_many, result["records"]) if result["records"] \
+            else {"inserted": 0, "updated": 0, "deduplicated": 0}
+        summary = {"collection_id": cid, "raw_objects": result["raw_objects"],
+                  "pages": result["pages"], **stats}
+        await asyncio.to_thread(crud.log_event, "soar_pull", actor, ip, ua,
+                                entries_ok=stats["inserted"] + stats["updated"],
+                                detail=json.dumps(summary))
+        results.append(summary)
+        totals["inserted"] += stats["inserted"]
+        totals["updated"] += stats["updated"]
+        totals["deduplicated"] += stats["deduplicated"]
+        totals["raw_objects"] += result["raw_objects"]
+
+    if not results and errors:
+        # Semua koleksi gagal — tidak ada yang perlu dilaporkan sebagai sukses parsial.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            "; ".join(f"{e['collection_id']}: {e['error']}" for e in errors))
+
+    return {**totals, "collections": results, "errors": errors}
 
 
 # ===================================================== BACKUP & RESTORE (GUI)

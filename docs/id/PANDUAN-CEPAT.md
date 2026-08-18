@@ -327,7 +327,15 @@ objek FortiGate berbeda.
 
 ---
 
-## 5. Operasional harian
+## 5. Menarik dari FortiSOAR (arah sebaliknya)
+
+Selain push di atas, server ini juga bisa aktif menarik indikator dari koleksi TAXII
+FortiSOAR (Intelligence → Threat Feeds → TAXII Server). Buka tombol **Tarik FortiSOAR**
+di dashboard: isi Server Address dan API Key, tekan **Uji Koneksi** untuk memuat daftar
+koleksi, pilih satu, tekan **Tarik Sekarang**. Detail lengkap termasuk polling otomatis:
+[../SOAR-TAXII-PULL.md](../SOAR-TAXII-PULL.md).
+
+## 6. Operasional harian
 
 | Kebutuhan | Perintah |
 |---|---|
@@ -343,7 +351,7 @@ Lewat dashboard: **Ekspor** (CSV/JSON/backup .db), **Backup** (snapshot + restor
 
 ---
 
-## 6. Bila bermasalah
+## 7. Bila bermasalah
 
 | Gejala | Kemungkinan penyebab |
 |---|---|
