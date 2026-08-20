@@ -127,7 +127,11 @@ thead th .arrow{color:var(--accent);font-size:9px}
 tbody td{padding:10px 14px;border-bottom:1px solid var(--line-soft);vertical-align:top}
 tbody tr:hover{background:var(--surface-2)}
 tbody tr:last-child td{border-bottom:0}
-.ip{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.ip{
+  font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:-.01em;
+  display:inline-block;max-width:480px;word-break:break-all;overflow-wrap:break-word;
+  white-space:normal;line-height:1.4;
+}
 .ip.inactive{color:var(--dim);text-decoration:line-through}
 .type{font-size:12px;color:var(--text)}
 .meta{font-size:11px;color:var(--muted);font-family:var(--mono)}
@@ -617,7 +621,7 @@ async function loadRows(){
     const iocType = r.ioc_type || 'ip';
     return `
     <tr>
-      <td><span class="ip${r.status!=='active'?' inactive':''}">${esc(r.ip_address)}</span>
+      <td><span class="ip${r.status!=='active'?' inactive':''}" title="${esc(r.ip_address)}">${esc(r.ip_address)}</span>
           <div class="meta st ${esc(r.status)}">${esc(r.status)}${r.hit_count>1?` · ${r.hit_count}×`:''}</div></td>
       <td><span class="badge ioc-badge ${IOC_TYPE_CLASS[iocType]||''}">${IOC_TYPE_LABEL[iocType]||esc(iocType)}</span></td>
       <td class="type">${esc(r.type)}</td>
