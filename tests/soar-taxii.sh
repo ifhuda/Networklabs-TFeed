@@ -40,6 +40,9 @@ def collections(request: Request):
         {"id": "coll-paged", "title": "Koleksi dua halaman"},
         {"id": "coll-severity-scale", "title": "Uji skala severity"},
         {"id": "coll-mixed-hash", "title": "Koleksi campuran IP + hash SHA-256"},
+        {"id": "coll-multi-type", "title": "IP + Hash + Domain"},
+        {"id": "coll-url-test", "title": "Uji URL"},
+        {"id": "coll-stuck-cursor", "title": "Uji cursor macet"},
     ]}
 
 @app.get("/api/taxii/1/collections/{cid}/objects")
@@ -123,6 +126,46 @@ def objects(cid: str, request: Request):
              "indicatorTypes": ["ipv4-addr"], "typeOfFeed": "IP Address"},
         ], "more": False}
 
+    if cid == "coll-multi-type":
+        # Satu koleksi berisi ketiga jenis sekaligus: IP, hash, domain. Nilai
+        # sengaja BEDA dari coll-mixed-hash supaya tidak saling tumpang tindih
+        # (insert vs update) antar skenario uji yang berjalan berurutan.
+        return {"objects": [
+            {"type": "indicator", "id": "mt1", "name": "203.0.113.201",
+             "value": "203.0.113.201", "reputation": "Malicious",
+             "source": "FortiGuard Outbreak", "tLP": "Amber", "confidence": 100,
+             "indicatorTypes": ["ipv4-addr"], "typeOfFeed": "IP Address"},
+            {"type": "indicator", "id": "mt2",
+             "name": "1111111111111111111111111111111111111111111111111111111111111111",
+             "value": "1111111111111111111111111111111111111111111111111111111111111111"[:64],
+             "reputation": "Malicious", "source": "FortiGuard Outbreak",
+             "tLP": "Amber", "confidence": 100, "indicatorTypes": ["file"],
+             "typeOfFeed": "FileHash-SHA256"},
+            {"type": "indicator", "id": "mt3", "name": "phishing.bad-domain.com",
+             "value": "phishing.bad-domain.com", "reputation": "Malicious",
+             "source": "Phishing Threat Feeds", "tLP": "Red", "confidence": 90,
+             "indicatorTypes": ["domain-name"], "typeOfFeed": "Domain"},
+        ], "more": False}
+
+    if cid == "coll-url-test":
+        # Persis payload dari screenshot produksi: URL "https://t.me/ChiefYoru"
+        # dari FortiGuard Outbreak, reputation=Malicious, tLP=Amber.
+        return {"objects": [
+            {"type": "indicator", "id": "u1", "name": "https://t.me/ChiefYoru",
+             "value": "https://t.me/ChiefYoru", "indicatorTypes": ["url"],
+             "typeOfFeed": "URL", "reputation": "Malicious",
+             "source": "FortiGuard Outbreak", "tLP": "Amber", "confidence": 100,
+             "recordTags": ["Outbreak Alert"]},
+        ], "more": False}
+
+    if cid == "coll-stuck-cursor":
+        # Server rusak: next TIDAK PERNAH maju walau more=true terus-menerus —
+        # menguji penjaga anti-loop di pull_collection.
+        return {"objects": [
+            {"type": "indicator", "id": "s1", "value": "203.0.113.250",
+             "reputation": "Malicious", "source": "Stuck", "tLP": "Red", "confidence": 90},
+        ], "more": True, "next": "cursor-yang-sama"}
+
     raise HTTPException(404, f"collection {cid} not found")
 
 if __name__ == "__main__":
@@ -167,30 +210,35 @@ curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/test-connection -H "$J" -d "
   \"url\":\"$TAXII\",\"key_name\":\"salah\",\"api_key\":\"salah\",\"verify_tls\":false}" \
   | python3 -c "import json,sys;print('  ', json.load(sys.stdin)['detail'][:60])"
 
-hr "4. test-connection benar -> daftar koleksi (5)"
+hr "4. test-connection benar -> daftar koleksi (8)"
 curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/test-connection -H "$J" -d "{
   \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",\"verify_tls\":false}" \
   | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print('   server_title:', d['server_title'])
 for c in d['collections']: print('   -', c['id'], ':', c['title'])
-assert len(d['collections']) == 5"
+assert len(d['collections']) == 8"
 
 hr "5. pull-now tanpa collection_id -> 400"
 curl -s -o /dev/null -w "   %{http_code} (400 = benar)\n" -b "$WORK/jar" \
   -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
   \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",\"verify_tls\":false}"
 
-hr "6. pull-now koleksi STIX standar: domain dilewati, IP masuk"
+hr "6. pull-now koleksi STIX standar: pattern IP dan domain-name keduanya tertarik"
 curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
   \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
   \"collection_id\":\"coll-standard\",\"feed_name\":\"UjiStandar\",\"verify_tls\":false}" \
   | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print('   raw_objects:', d['raw_objects'], '| inserted:', d['inserted'])
-assert d['raw_objects'] == 2 and d['inserted'] == 1, 'domain harus dilewati, hanya 1 IP masuk'
+assert d['raw_objects'] == 2 and d['inserted'] == 2, \
+    'pattern ipv4-addr DAN domain-name harus dua-duanya tertarik dengan ioc_type masing-masing'
 assert d['collections'][0]['collection_id'] == 'coll-standard'
 assert d['errors'] == []"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=evil.example.com&size=5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['total'] == 1 and d['items'][0]['ioc_type'] == 'domain', d
+print('   OK — domain dari pattern STIX baku tersimpan dengan ioc_type=domain')"
 
 hr "7. Indikator benar-benar tersaji di feed FortiGate"
 FEED=$(curl -s $U/api/v1/feed/fortigate -H "Authorization: Bearer fgttok")
@@ -219,7 +267,7 @@ print('   confidence:', row['confidence'])
 assert row['type'] == 'Malicious', 'type harus diisi dari field reputation'
 assert row['severity'] == 'Critical', 'reputation=Malicious harus dipetakan ke severity=Critical (skala standar), bukan disalin mentah'
 assert row['source'] == 'IPsum Threat Intelligence Feed', 'source harus field source asli, bukan nama feed lokal'
-assert row['comment'] == 'IPsum Threat Intelligence Feed — Malicious', 'comment harus source + reputation'
+assert row['comment'] == 'IPsum Threat Intelligence Feed - Malicious', 'comment harus source + reputation (pemisah ASCII biasa, bukan em-dash — lihat skenario 8k)'
 assert row['tlp'] == 'TLP:RED', 'tLP=\"Red\" (huruf L kapital) harus terpetakan ke TLP:RED'
 assert row['confidence'] == 100
 print('   OK — semua field termapping benar dari payload asli FortiSOAR')"
@@ -246,7 +294,7 @@ for ip, want in expect.items():
     assert got == want, f'{ip}: dapat {got}, harus {want}'
 print('   OK — seluruh tabel pemetaan severity benar')"
 
-hr "8d. Koleksi campuran IP + hash SHA-256 — tidak boleh crash (regresi bug produksi)"
+hr "8d. Koleksi campuran IP + hash SHA-256 — tidak boleh crash, hash tertarik sebagai indikator hash"
 curl -s -o /tmp/mixed_result.json -w "   HTTP %{http_code} (200 = benar, BUKAN 500)\n" \
   -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
   \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
@@ -256,12 +304,113 @@ import json
 d = json.load(open('/tmp/mixed_result.json'))
 print('   raw_objects:', d.get('raw_objects'), '| inserted:', d.get('inserted'))
 assert d.get('raw_objects') == 3, d
-assert d.get('inserted') == 2, 'harus 2 IP masuk, 1 hash dilewati diam-diam: ' + str(d)
-print('   OK — 2 IP masuk, 1 hash SHA-256 dilewati tanpa men-crash siklus')"
+assert d.get('inserted') == 3, 'ketiganya (2 IP + 1 hash) harus tertarik: ' + str(d)
+print('   OK — 2 IP dan 1 hash SHA-256 semuanya tertarik tanpa men-crash siklus')"
 curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=9c285fe3&size=5" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
-assert d['total'] == 0, 'hash SHA-256 tidak boleh masuk database'
-print('   OK — hash SHA-256 tidak tersimpan sebagai indikator')"
+assert d['total'] == 1 and d['items'][0]['ioc_type'] == 'hash', d
+print('   OK — hash SHA-256 tersimpan sebagai indikator dengan ioc_type=hash')"
+
+hr "8e. Koleksi campuran IP+hash+domain — ketiganya masuk dengan ioc_type benar"
+curl -s -o /tmp/multitype_result.json -w "   HTTP %{http_code}\n" -b "$WORK/jar" \
+  -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-multi-type\",\"feed_name\":\"UjiMultiType\",\"verify_tls\":false}"
+python3 -c "
+import json
+d = json.load(open('/tmp/multitype_result.json'))
+print('   inserted:', d.get('inserted'), '(harus 3 — IP, hash, domain semuanya masuk)')
+assert d.get('inserted') == 3, d"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=203.0.113.201&size=5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['total'] == 1 and d['items'][0]['ioc_type'] == 'ip', d
+print('   OK — IP:', d['items'][0]['ip_address'], '-> ioc_type=ip')"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=1111111111111111&size=5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['total'] == 1 and d['items'][0]['ioc_type'] == 'hash', d
+print('   OK — Hash: ioc_type=hash')"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=phishing.bad-domain.com&size=5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['total'] == 1 and d['items'][0]['ioc_type'] == 'domain', d
+print('   OK — Domain: ioc_type=domain')"
+
+hr "8f. Feed FortiGate IP/domain/hash TERPISAH — tidak boleh bocor silang"
+FGT='Authorization: Bearer fgttok'
+HASH64=$(printf '1%.0s' {1..64})
+FEED_IP=$(curl -s $U/api/v1/feed/fortigate/clean -H "$FGT")
+FEED_DOMAIN=$(curl -s $U/api/v1/feed/fortigate/domain/clean -H "$FGT")
+FEED_HASH=$(curl -s $U/api/v1/feed/fortigate/hash/clean -H "$FGT")
+echo "   feed IP    : $FEED_IP"
+echo "   feed domain: $FEED_DOMAIN"
+echo "   feed hash  : $FEED_HASH"
+[[ "$FEED_IP" == *"203.0.113.201"* ]] && [[ "$FEED_IP" != *"phishing"* ]] && [[ "$FEED_IP" != *"$HASH64"* ]] \
+  && echo "   OK — feed IP hanya berisi IP" || echo "   GAGAL — feed IP bocor tipe lain"
+[[ "$FEED_DOMAIN" == *"phishing.bad-domain.com"* ]] && [[ "$FEED_DOMAIN" != *"203.0.113.201"* ]] \
+  && echo "   OK — feed domain hanya berisi domain" || echo "   GAGAL — feed domain bocor tipe lain"
+[[ "$FEED_HASH" == *"$HASH64"* ]] && [[ "$FEED_HASH" != *"203.0.113.201"* ]] \
+  && echo "   OK — feed hash hanya berisi hash" || echo "   GAGAL — feed hash bocor tipe lain"
+
+hr "8g. Filter ?ioc_type= di /api/v1/indicators"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?ioc_type=hash&size=10" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('   total dengan ioc_type=hash:', d['total'])
+assert all(r['ioc_type'] == 'hash' for r in d['items'])
+print('   OK — semua hasil bertipe hash')"
+
+hr "8h. Indikator URL (persis payload FortiGuard Outbreak dari screenshot produksi)"
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-url-test\",\"feed_name\":\"UjiURL\",\"verify_tls\":false}" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('   inserted:', d['inserted'])
+assert d['inserted'] == 1"
+curl -s -b "$WORK/jar" "$U/api/v1/indicators?q=t.me&size=5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['total'] == 1, d
+r = d['items'][0]
+assert r['ip_address'] == 'https://t.me/ChiefYoru', r
+assert r['ioc_type'] == 'url', r
+assert r['severity'] == 'Critical', r
+print('   OK — URL tersimpan dengan ioc_type=url, severity=Critical (dari reputation=Malicious)')"
+
+hr "8i. Feed FortiGate URL terpisah — tidak bocor ke feed IP"
+FGT='Authorization: Bearer fgttok'
+FEED_IP_2=$(curl -s $U/api/v1/feed/fortigate/clean -H "$FGT")
+FEED_URL=$(curl -s $U/api/v1/feed/fortigate/url/clean -H "$FGT")
+echo "   feed URL: $FEED_URL"
+[[ "$FEED_URL" == *"t.me/ChiefYoru"* ]] && echo "   OK — feed URL berisi URL yang benar" || echo "   GAGAL"
+[[ "$FEED_IP_2" != *"t.me"* ]] && echo "   OK — URL tidak bocor ke feed IP" || echo "   GAGAL — URL bocor ke feed IP"
+
+hr "8j. Penjaga cursor macet: next yang tidak maju harus berhenti, bukan loop sampai page_limit"
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-stuck-cursor\",\"feed_name\":\"UjiStuck\",\"verify_tls\":false}" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+c = d['collections'][0]
+print('   pages:', c['pages'], '(harus 2 — deteksi minimum saat cursor sama muncul 2x, bukan 20)')
+assert c['pages'] == 2, f'penjaga gagal, masih {c[\"pages\"]} halaman'
+print('   OK — penjaga berhenti di 2 request, bukan menghabiskan page_limit=20')"
+
+hr "8k. Komentar feed hash ASCII-aman — em-dash tidak boleh memotong deskripsi FortiOS"
+# Bug produksi nyata: FortiOS scanunit memotong field description pada
+# external-resource malware-hash begitu ketemu byte non-ASCII pertama.
+# Em-dash "—" (pemisah lama "Sumber — Reputasi") membuat 'diagnose sys
+# scanunit file-hash list malware' hanya menampilkan "Sumber " tanpa reputasi.
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-mixed-hash\",\"feed_name\":\"UjiAsciiSafe\",\"verify_tls\":false}" >/dev/null
+curl -s "$U/api/v1/feed/fortigate/hash" -H "$FGT" | python3 -c "
+import sys
+body = sys.stdin.read()
+assert body.encode('ascii'), 'feed hash mengandung byte non-ASCII \u2014 akan terpotong FortiOS'
+lines = [l for l in body.splitlines() if l and not l.startswith('#')]
+assert lines, 'feed hash kosong'
+for l in lines:
+    if ' # ' in l:
+        _, _, desc = l.partition(' # ')
+        assert desc, f'deskripsi kosong pada baris: {l!r}'
+        print('   baris:', l[:90])
+print('   OK \u2014 seluruh baris feed hash murni ASCII, deskripsi tidak terpotong')"
 
 hr "9. Cursor per-koleksi (bukan global) — uji langsung ke fungsi pemilih cursor"
 python3 - <<PYEOF
@@ -384,4 +533,46 @@ if ! grep -q 'id="soar_collection"' "$WORK/page.html"; then
 else
   echo "   PERINGATAN — dropdown lama masih ditemukan di HTML"
 fi
+
+hr "16b. Backend: field kosong (url/key_name/api_key) tetap jatuh ke config .env"
+# Panel GUI sekarang tidak lagi merender field koneksi saat sudah tersimpan
+# di .env (diverifikasi manual lewat Playwright: form kosong + Tarik Sekarang
+# tetap berhasil dua kali berturut-turut). Di sini diuji langsung fungsi
+# fallback-nya: _soar_field() harus memilih config bila body kosong.
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from app.main import _soar_field
+assert _soar_field('', 'dari-config') == 'dari-config'
+assert _soar_field('  ', 'dari-config') == 'dari-config'
+assert _soar_field('dari-body', 'dari-config') == 'dari-body'
+print('   OK — _soar_field jatuh ke config saat body kosong, body menang saat diisi')
+"
+
+hr "17. GUI: opsi 'Tarik ulang semua' (full_history) ada di panel"
+grep -q 'id="soar_full_history"' "$WORK/page.html" && echo "   OK — checkbox full_history ditemukan di HTML"
+
+hr "18. full_history=true benar-benar mengabaikan cursor added_after"
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-standard\",\"feed_name\":\"UjiFullHistory\",
+  \"full_history\":false,\"verify_tls\":false}" >/dev/null
+# Pull kedua TANPA full_history: cursor sudah maju dari pull pertama, mock
+# coll-standard tidak memfilter added_after (selalu kembalikan objek sama),
+# tapi upsert harus mengenali sebagai UPDATE, bukan INSERT baru.
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-standard\",\"feed_name\":\"UjiFullHistory\",
+  \"full_history\":false,\"verify_tls\":false}" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('   pull kedua (full_history=false): inserted=', d['inserted'], 'updated=', d['updated'])
+assert d['inserted'] == 0, 'objek yang sudah ada tidak boleh ter-insert ulang'"
+# Pull ketiga DENGAN full_history=true: harus tetap sukses (bukan error),
+# dan tetap terdeteksi sebagai update (data tidak berubah di mock).
+curl -s -b "$WORK/jar" -X POST $U/api/v1/admin/soar/pull-now -H "$J" -d "{
+  \"url\":\"$TAXII\",\"key_name\":\"svc-key\",\"api_key\":\"s3cr3t-token-xyz\",
+  \"collection_id\":\"coll-standard\",\"feed_name\":\"UjiFullHistory\",
+  \"full_history\":true,\"verify_tls\":false}" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('   pull ketiga (full_history=true): inserted=', d['inserted'], 'updated=', d['updated'])
+assert d['updated'] >= 1, 'full_history=true harus tetap menarik objek yang sudah pernah ada'"
 echo

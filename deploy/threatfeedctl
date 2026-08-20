@@ -155,6 +155,29 @@ config)
   [[ ${a,,} == n ]] || { systemctl restart threatfeed; printf '%s✓%s direstart\n' "$C_G" "$C_0"; }
   ;;
 
+clear-legacy-settings)
+  # Panel "Pengaturan" (perubahan instan tanpa restart) sudah dipensiunkan —
+  # semua pengaturan sekarang lewat .env / Konfigurasi Sistem saja. Perintah
+  # ini membuang override yang sempat tersimpan di database dari versi
+  # sebelumnya, supaya service startup log tidak lagi memperingatkannya di
+  # setiap restart. Aman dijalankan kapan saja: nilai efektif sesudahnya
+  # murni mengikuti .env, persis seperti instalasi baru.
+  need_root
+  need_service
+  COUNT=$(as_app sqlite3 "$DB" "SELECT COUNT(*) FROM settings;" 2>/dev/null || echo 0)
+  if [[ "$COUNT" -eq 0 ]]; then
+    printf '%sTidak ada override lama tersimpan — tidak ada yang perlu dibersihkan.%s\n' "$C_G" "$C_0"
+    exit 0
+  fi
+  printf 'Ditemukan %s pengaturan lama tersimpan di database:\n' "$COUNT"
+  as_app sqlite3 -box "$DB" "SELECT key, value, updated_at FROM settings ORDER BY key;"
+  read -r -p "Hapus semua dan kembalikan ke nilai .env? [y/N] " a
+  [[ ${a,,} == y ]] || { echo "Dibatalkan."; exit 0; }
+  as_app sqlite3 "$DB" "DELETE FROM settings;"
+  printf '%s✓%s Dibersihkan. Restart service agar log peringatan hilang:\n' "$C_G" "$C_0"
+  printf '  sudo systemctl restart threatfeed\n'
+  ;;
+
 test)
   need_service
   IP=${1:-192.0.2.99}

@@ -35,13 +35,20 @@ keep confirming them, and the dashboard shows you when they stop.
   per-item without failing the batch.
 - **Third-party webhooks** — path-based block/unblock endpoints and an opt-in JSON
   scanner let products like FortiDeceptor integrate without control over the payload.
+- **Pull from FortiSOAR (TAXII 2.1)** — complements the push ingest above: connect to
+  FortiSOAR's Outgoing TAXII Feed, browse and select any number of collections, and
+  pull on a schedule or on demand. Recognises IP, domain, file-hash, and URL indicators
+  (`ioc_type`), each validated and stored separately, with per-collection cursoring
+  so nothing is re-fetched or missed, and a guard that stops paginating if a server
+  returns a non-advancing cursor instead of looping to the page limit.
 - **Deduplication and upsert** — one row per indicator. Re-sending updates severity,
   confidence, and comment in place.
 - **TTL expiry** — indicators drop out of the feed automatically after N days without
   a refresh. Configurable globally or per external-resource object.
-- **FortiGate-native output** — plain text, one entry per line. Supports IPv4, IPv6,
-  CIDR, and ranges. HTTP Basic auth, ETag/`304`, and a query-string-free URL because
-  FortiGate's CLI sometimes swallows `?`.
+- **FortiGate-native output** — plain text, one entry per line, split into separate
+  IP/domain/hash/URL feeds so a single external-resource object never mixes types.
+  Supports IPv4, IPv6, CIDR, and ranges. HTTP Basic auth, ETag/`304`, and a
+  query-string-free URL because FortiGate's CLI sometimes swallows `?`.
 - **Operator dashboard** — dark-themed, no CDN (works on air-gapped networks). Global
   search, TLP badges, and a TTL decay strip that warns you days before coverage lapses.
 - **Runtime settings** — TTL, comment format, allow-lists, and defaults are editable

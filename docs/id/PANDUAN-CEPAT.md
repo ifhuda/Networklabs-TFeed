@@ -60,8 +60,10 @@ sudo threatfeedctl creds | grep -i feed
 ### Cara termudah: salin dari dashboard
 
 Buka **Konfigurasi Sistem → Kredensial & Keamanan → Snippet CLI FortiGate**. Panel itu
-merakit blok di bawah dengan URL, path, username, dan filter yang sudah benar, lengkap
-dengan jumlah entri yang cocok. Tekan **Salin**, tempel di FortiGate.
+merakit blok di bawah dengan URL, path, username, dan filter yang sudah benar sesuai
+`set type` yang Anda pilih (address/domain/malware/category masing-masing menunjuk ke
+endpoint feed yang tepat secara otomatis), lengkap dengan jumlah entri yang cocok.
+Tekan **Salin**, tempel di FortiGate.
 
 ### Manual
 
@@ -71,7 +73,7 @@ config system external-resource
         set type address
         set resource "https://192.168.110.9/api/v1/feed/fortigate/annotated"
         set refresh-rate 5
-        set server-identity-check full
+        set server-identity-check none
         set username "fortigate"
         set password <TOKEN_FEED>
         set status enable
@@ -83,8 +85,9 @@ Catatan penting:
 
 - **Path `/annotated`** hanya bila Anda memasang dengan `--comments`. Kalau tidak, pakai
   `/api/v1/feed/fortigate`.
-- **`server-identity-check full`** butuh sertifikat dari CA yang root-nya sudah diimpor
-  ke FortiGate. Untuk sertifikat self-signed, pakai `set server-identity-check none`.
+- **`server-identity-check none`** adalah default panel (cocok untuk sertifikat
+  self-signed, kasus paling umum di instalasi internal). Pakai `full` hanya bila
+  FortiGate sudah mempercayai sertifikat server ini lewat CA yang diimpor.
 - **`username`** boleh apa saja secara default; hanya token yang diperiksa. Kalau Anda
   mengisi `TF_FEED_USERNAME`, nilai di sini harus sama persis.
 
@@ -147,6 +150,74 @@ next
 
 Parameter yang tersedia: `severity`, `type`, `tlp`, `feed_name`, `min_confidence`,
 `ttl_days`, `limit`.
+
+### Feed domain, hash, dan URL — endpoint terpisah
+
+Domain, hash file, dan URL tidak pernah tercampur ke feed IP di atas — server mengunci
+jenis indikator per endpoint, tidak bisa diubah lewat query string. Masing-masing juga
+butuh `set type` dan cara pemasangan yang berbeda di FortiGate — tidak semuanya
+langsung dipasang ke firewall policy seperti feed IP.
+
+**Domain** — dipasang ke firewall policy seperti feed IP biasa:
+
+```
+config system external-resource
+    edit "IoC-DOMAIN"
+        set type domain
+        set resource "https://192.168.110.9/api/v1/feed/fortigate/domain"
+        set server-identity-check none
+        set status enable
+    next
+end
+```
+
+**Hash file** — `set type malware`, dipasang lewat **AntiVirus profile**, bukan
+langsung ke firewall policy:
+
+```
+config system external-resource
+    edit "IoC-HASH"
+        set type malware
+        set resource "https://192.168.110.9/api/v1/feed/fortigate/hash"
+        set server-identity-check none
+        set status enable
+    next
+end
+
+config antivirus profile
+    edit "nama_profile_anda"
+        config outbreak-prevention
+            set external-blocklist "IoC-HASH"
+        end
+    next
+end
+```
+
+Verifikasi hash benar-benar aktif (bukan cuma "Valid" di GUI konfigurasi):
+```
+diagnose sys scanunit file-hash list malware
+```
+
+**URL** — `set type category` (bukan `domain`!), butuh nomor kategori unik 192–221,
+dan dipasang lewat **Web Filter profile**, bukan langsung ke firewall policy:
+
+```
+config system external-resource
+    edit "IoC-URL"
+        set type category
+        set category 192
+        set resource "https://192.168.110.9/api/v1/feed/fortigate/url"
+        set server-identity-check none
+        set status enable
+    next
+end
+```
+
+Lalu di **Security Profiles → Web Filter**, kategori "Remote" (nama konektor Anda) akan
+muncul otomatis — set aksinya ke **Block**, pasang profil itu ke firewall policy, dan
+**wajib aktifkan SSL Deep Inspection** — tanpa itu FortiGate cuma melihat hostname
+(SNI) dari trafik HTTPS, bukan path URL-nya, sehingga pencocokan URL lengkap tidak
+akan pernah kena.
 
 ---
 

@@ -140,9 +140,12 @@ Use `server-identity-check none` while the certificate is self-signed.
 
 Konfigurasi Sistem → Kredensial & Keamanan has a **Snippet CLI FortiGate** panel that
 assembles the block above from live configuration: the base URL comes from the request
-you are making (the address proven reachable, not a guess from the hostname), the path
-follows `TF_FEED_INLINE_COMMENTS`, and the username follows `TF_FEED_USERNAME`. Object name, `set type`, `server-identity-check`, `refresh-rate`, and optional
-`severity` / `type` / `tlp` / `feed_name` filters are adjustable inline.
+you are making (the address proven reachable, not a guess from the hostname), the
+**resource path follows the selected `set type`** (address → the IP feed, domain →
+`/domain`, malware → `/hash`, category → `/url`), and the username follows
+`TF_FEED_USERNAME`. Object name, `set type`, `server-identity-check` (defaults to
+`none`, since most deployments run self-signed certificates), `refresh-rate`, and
+optional `severity` / `type` / `tlp` / `feed_name` filters are adjustable inline.
 
 The header shows **how many indicators actually match** the current filters, updating as
 you type. Zero turns red and adds an explicit warning — a mistyped filter produces an
@@ -205,6 +208,23 @@ parameterised URL into a nonexistent path that answers `404` — reported in the
 /api/v1/feed/fortigate.txt        always bare IPs, for tools that expect an extension
 /api/v1/feed/fortigate/annotated  always with inline comments
 ```
+
+### IP, domain, and hash are separate feeds
+
+One `set type address` external-resource can't sensibly mix IP addresses with domains
+or file hashes. Three endpoints exist, each locked server-side to one `ioc_type` —
+you cannot override this with a query parameter, because accidentally mixing types into
+a live firewall policy's address feed is exactly the failure mode this separation
+prevents:
+
+| Endpoint | Contents | FortiGate `external-resource` type |
+|---|---|---|
+| `/api/v1/feed/fortigate` (+ `/clean`, `/annotated`, `.txt`) | IP addresses only | `set type address`, applied directly to a firewall policy |
+| `/api/v1/feed/fortigate/domain` (+ `/clean`, `/annotated`) | Domains only | `set type domain`, applied directly to a firewall policy |
+| `/api/v1/feed/fortigate/hash` (+ `/clean`) | File hashes only | `set type malware`, applied via an AntiVirus profile's external malware block list — not directly to a policy |
+| `/api/v1/feed/fortigate/url` (+ `/clean`) | Full URLs only | `set type category` with a custom category number (192–221), applied via a Web Filter profile as a Remote Category — requires SSL deep inspection to see the URL path over HTTPS |
+
+All the filters below work identically on all four.
 
 ### Query parameters
 
@@ -280,8 +300,12 @@ days before coverage lapses, rather than after.
 time, and FortiGate pull count over 24 hours.
 
 **Table.** Severity is a heat bar sized by confidence; TLP is a badge in its official
-colour. Every column sorts. One search box covers IP, type, TLP, severity, source,
-comment, and feed name, plus five dropdown filters.
+colour. **Tipe** shows what kind of indicator this is — IP Address, Domain, Hash, or
+URL — as a coloured badge, separate from **Reputasi** (the original label from the
+source, e.g. FortiSOAR's `reputation` field: "Malicious", "Suspicious"). Every column
+sorts. One search box covers IP/domain/hash/URL value, type, TLP, severity, source,
+comment, and feed name, plus six dropdown filters including a dedicated Tipe filter
+(IP Address / Domain / Hash / URL).
 
 **Audit trail.** The last 60 events with client IP and duration.
 
@@ -410,8 +434,9 @@ password immediately.
 
 ### From the dashboard
 
-Click **Pengaturan** in the header. Fifteen policy settings can be changed there, and
-they take effect immediately — no restart:
+Click **Konfigurasi Sistem** in the header. Every setting — policy defaults, credentials,
+TAXII connection, backup schedule, everything — lives here, written directly to
+`/etc/threatfeed/threatfeed.env`:
 
 | Group | Settings |
 |---|---|
@@ -420,30 +445,34 @@ they take effect immediately — no restart:
 | Entry defaults | Type, severity, TLP, source, confidence |
 | Access control | Ingest and feed CIDR allow-lists |
 | Maintenance | Prune interval, audit retention |
+| Credentials & security | Tokens, dashboard password, session key |
+| Backup & recovery | Schedule, retention, directory |
+| Pull from FortiSOAR | TAXII connection, collection IDs, poll interval |
 
-Changes are stored as overrides in the database, not written back to the `.env` file,
-and each field shows whether its current value comes from `.env` or the dashboard.
-**Kembalikan ke .env** discards every override at once.
+Two safeguards are built in regardless of which field you're editing. Loopback entries
+are always re-added to the CIDR allow-lists, so a typo cannot lock out `threatfeedctl`,
+which reaches the API over `127.0.0.1`. And saving requires re-entering the dashboard
+password — a hijacked session cookie alone is not enough to rewrite credentials.
 
-Two safeguards are built in. Loopback entries are always re-added to the CIDR allow-lists,
-so a typo cannot lock out `threatfeedctl`, which reaches the API over `127.0.0.1`. And
-tokens, the dashboard password, the session key, the database path, and the proxy flags
-are deliberately **not** editable from the web interface — otherwise a hijacked dashboard
-session would escalate into full control. Those stay in `.env`, changeable only by root:
+Saving rewrites the `.env` file through a root helper and restarts the service a few
+seconds later — this is the trade-off for having one authoritative place instead of two:
+a config change takes a brief restart to apply, rather than being instant.
+
+An earlier version of this dashboard had a second panel, **Pengaturan**, that applied a
+subset of the same fields instantly without a restart. It has been removed — the field
+list was a 100% duplicate of Konfigurasi Sistem, and two places to change the same value
+was worse than the few seconds a restart costs. If you're upgrading from that version,
+see [SYSTEM-CONFIG.md](SYSTEM-CONFIG.md#upgrading-from-a-version-with-pengaturan).
+
+### From the file
+
+`/etc/threatfeed/threatfeed.env` — restart the service after any change:
 
 ```bash
 sudo threatfeedctl config
 sudo threatfeedctl rotate ingest|feed|admin
 ```
 
-The service reads `.env` as the service account, which has no write access to it. That
-is why overrides live in the database: a network-facing process should not be able to
-rewrite its own credentials.
-
-### From the file
-
-`/etc/threatfeed/threatfeed.env` — restart the service after any change. Values here are
-the baseline; dashboard overrides sit on top of them.
 
 | Key | Default | Meaning |
 |---|---|---|

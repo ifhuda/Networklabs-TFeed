@@ -1,18 +1,16 @@
 # System Configuration page
 
-The dashboard has two settings surfaces, and the difference matters:
+Everything — policy defaults, credentials, TAXII connection, backup schedule — is
+configured in one place: **Konfigurasi Sistem**. An earlier version of this dashboard
+also had a separate **Pengaturan** panel that applied a subset of the same values
+instantly without a restart; it has been retired because its entire field list
+duplicated Konfigurasi Sistem, and having two places to change the same value was more
+confusing than the restart it avoided.
 
-| | **Pengaturan** | **Konfigurasi Sistem** |
-|---|---|---|
-| Stores to | `settings` table in SQLite | `/etc/threatfeed/threatfeed.env` |
-| Covers | 15 policy values | All 24 variables, including secrets |
-| Applies | Immediately, no restart | Rewrites the file, then restarts the service |
-| Enabled | Always | **On by default** since this version; opt-out via `TF_ALLOW_ENV_WRITE=false` |
-| Needs | A dashboard session | Session **plus** password re-entry, plus a root helper |
-
-Use **Pengaturan** for day-to-day tuning. Use **Konfigurasi Sistem** when you need to
-rotate tokens, change the dashboard password, or edit anything that only exists in the
-`.env` file.
+If you're running an install that still has values stored from the old **Pengaturan**
+panel, see [Upgrading from a version with "Pengaturan"](#upgrading-from-a-version-with-pengaturan)
+below — those values keep applying (nothing silently reverts), but you should migrate
+them into `.env` and clear the leftover database rows.
 
 ---
 
@@ -259,3 +257,31 @@ malicious inputs, wrong-password refusal, a successful save, comment and orderin
 preservation, file mode, backup creation, restart scheduling via `systemd-run`, secret
 writes, blank-means-unchanged, audit redaction, the random generators, and the disabled
 state.
+
+---
+
+## Upgrading from a version with "Pengaturan"
+
+`/api/v1/settings`, `/api/v1/settings/reset`, and the **Pengaturan** button/drawer no
+longer exist — the GUI and the write endpoints are gone. What's still there on purpose:
+the `settings` database table itself, and the code that applies any rows already in it
+to the running config at startup. That combination means:
+
+- **Nothing silently reverts.** If you previously changed, say, `TF_TTL_DAYS` via
+  Pengaturan, that value keeps being applied after upgrading, exactly as before.
+- **You can no longer see or change it from the dashboard.** The value now only lives in
+  a database row with no GUI in front of it — invisible unless you go looking.
+- **The startup log tells you it's there.** Every boot with leftover rows logs a
+  warning naming the affected keys, so this doesn't stay a silent surprise forever.
+
+To migrate: open **Konfigurasi Sistem**, set each warned-about key to the value you
+want (check the current effective value with `sudo threatfeedctl doctor` or
+`GET /api/v1/stats` if unsure), save — then clear the now-redundant database rows:
+
+```bash
+sudo threatfeedctl clear-legacy-settings
+```
+
+This lists what's stored, asks for confirmation, deletes the rows, and reminds you to
+restart. Safe to run even if there's nothing to clear.
+

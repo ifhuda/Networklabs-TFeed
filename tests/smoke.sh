@@ -150,91 +150,46 @@ echo -n "  g. IP sensor TIDAK ikut tersimpan -> "
 curl -s -b /tmp/tf.jar "localhost:8899/api/v1/indicators?q=192.168.110.9" \
   | python3 -c "import json,sys;print('benar' if json.load(sys.stdin)['total']==0 else 'SALAH - ikut tersimpan')"
 
-echo; echo "== 18. Pengaturan lewat dashboard =="
-echo -n "  a. GET tanpa sesi -> "
-curl -s -o /dev/null -w "%{http_code} (401 = benar)\n" localhost:8899/api/v1/settings
+echo; echo "== 18. Panel Pengaturan sudah dipensiunkan — endpoint lama harus 404 =="
+echo -n "  a. GET /api/v1/settings -> 404 (fitur dihapus, bukan 401) -> "
+curl -s -o /dev/null -w "%{http_code}\n" -b /tmp/tf.jar localhost:8899/api/v1/settings
 
-echo "  b. nilai awal (asal .env):"
-curl -s -b /tmp/tf.jar localhost:8899/api/v1/settings | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-for s in d['settings']:
-    if s['key'] in ('TF_TTL_DAYS','TF_FEED_COMMENT_FORMAT','TF_INGEST_ALLOWED_CIDRS'):
-        print(f\"     {s['key']:<26} = {s['value']:<22} (asal: {s['source']})\")
-print('     kunci rahasia yang ditolak:', len(d['readonly_keys']))"
+echo -n "  b. PUT /api/v1/settings -> 404 -> "
+curl -s -o /dev/null -w "%{http_code}\n" -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings \
+  -H "$J" -d '{"changes":{"TF_TTL_DAYS":"1"}}'
 
-echo "  c. validasi menolak nilai buruk (semua-atau-tidak):"
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_TTL_DAYS":"9999999","TF_FEED_COMMENT_FORMAT":"ngawur"}}' \
-  | python3 -c "import json,sys;print('    ',json.load(sys.stdin)['detail'][:150])"
+echo -n "  c. POST /api/v1/settings/reset -> 404 -> "
+curl -s -o /dev/null -w "%{http_code}\n" -b /tmp/tf.jar -X POST localhost:8899/api/v1/settings/reset \
+  -H "$J" -d '{"changes":{}}'
 
-echo -n "  d. token TIDAK boleh diubah lewat dashboard -> "
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_INGEST_TOKENS":"token-jahat"}}' \
-  | python3 -c "import json,sys;print('ditolak:', json.load(sys.stdin)['detail'][:80])"
+echo -n "  d. Tombol dan drawer Pengaturan tidak ada lagi di HTML -> "
+curl -s localhost:8899/ -o /tmp/no_pengaturan.html
+if ! grep -q 'id="btnSettings"' /tmp/no_pengaturan.html && ! grep -q 'id="drawer"' /tmp/no_pengaturan.html; then
+  echo "OK — keduanya sudah tidak ada"
+else
+  echo "GAGAL — masih ditemukan di HTML"
+fi
 
-echo -n "  e. TTL diubah jadi 1 hari lalu berlaku SEKETIKA -> "
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_TTL_DAYS":"1"}}' >/dev/null
+echo "  e. Override lama di database (kalau ada) memicu peringatan startup, bukan hilang senyap:"
 python3 - <<'PY'
 import sqlite3, os
 c = sqlite3.connect(os.environ["TF_DB_PATH"])
-c.execute("UPDATE indicators SET updated_at='2026-08-05T00:00:00Z' WHERE ip_address='1.1.1.1'")
-c.execute("UPDATE indicators SET status='active' WHERE ip_address='1.1.1.1'")
+c.execute("INSERT OR REPLACE INTO settings (key, value, updated_at, updated_by) "
+          "VALUES ('TF_TTL_DAYS', '77', '2026-01-01T00:00:00Z', 'uji-lama')")
 c.commit()
 PY
-BEFORE=$(curl -s "localhost:8899/api/v1/feed/fortigate/clean" -H "$BF" | grep -c '^1\.1\.1\.1$' || true)
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" -d '{"changes":{"TF_TTL_DAYS":"3650"}}' >/dev/null
-AFTER=$(curl -s "localhost:8899/api/v1/feed/fortigate/clean" -H "$BF" | grep -c '^1\.1\.1\.1$' || true)
-[[ "$BEFORE" == "0" && "$AFTER" == "1" ]] && echo "benar (TTL 1 hari: tersembunyi, TTL 3650: muncul, tanpa restart)" \
-  || echo "GAGAL (before=$BEFORE after=$AFTER)"
-
-echo -n "  f. loopback dipertahankan otomatis di allowlist -> "
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_FEED_ALLOWED_CIDRS":"10.99.0.0/16"}}' \
-  | python3 -c "import json,sys;v=json.load(sys.stdin)['values']['TF_FEED_ALLOWED_CIDRS'];print('benar:' if '127.0.0.1/32' in v else 'GAGAL:', v)"
-
-echo -n "  g. feed masih bisa ditarik dari loopback setelah allowlist dipersempit -> "
-curl -s -o /dev/null -w "%{http_code}\n" "localhost:8899/api/v1/feed/fortigate/clean" -H "$BF"
-
-echo -n "  h. CIDR tidak valid ditolak -> "
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_FEED_ALLOWED_CIDRS":"bukan-cidr"}}' \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['detail'][:70])"
-
-echo "  i. reset mengembalikan ke nilai .env:"
-curl -s -b /tmp/tf.jar -X POST localhost:8899/api/v1/settings/reset -H "$J" -d '{"changes":{}}' \
-  | python3 -c "import json,sys;print('     dibuang:',json.load(sys.stdin)['reset'])"
-curl -s -b /tmp/tf.jar localhost:8899/api/v1/settings | python3 -c "
-import json,sys
-for s in json.load(sys.stdin)['settings']:
-    if s['key'] in ('TF_TTL_DAYS','TF_FEED_ALLOWED_CIDRS'):
-        print(f\"     {s['key']:<26} = {s['value']:<22} (asal: {s['source']})\")"
-
-echo -n "  j. sesi dashboard tetap hidup setelah reset -> "
-curl -s -o /dev/null -w "%{http_code} (200 = benar)\n" -b /tmp/tf.jar localhost:8899/api/v1/stats
-
-echo -n "  k. perubahan tercatat di audit -> "
-curl -s -b /tmp/tf.jar "localhost:8899/api/v1/audit?limit=30" \
-  | python3 -c "
-import json,sys
-a=[x for x in json.load(sys.stdin)['items'] if x['action'].startswith('settings')]
-print(f\"{len(a)} entri: {sorted(set(x['action'] for x in a))}\")"
-
-echo; echo "== 19. Pengaturan bertahan setelah service restart =="
-curl -s -b /tmp/tf.jar -X PUT localhost:8899/api/v1/settings -H "$J" \
-  -d '{"changes":{"TF_TTL_DAYS":"77","TF_FEED_COMMENT_FORMAT":"full"}}' >/dev/null
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
-python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8899 --log-level warning &
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8899 --log-level warning > /tmp/restart_warn.log 2>&1 &
 SRV=$!
 for i in $(seq 1 40); do curl -sf localhost:8899/healthz >/dev/null && break; sleep 0.25; done
-echo -n "  TTL setelah restart -> "
-curl -s "localhost:8899/api/v1/feed/fortigate?comments=true" -H "$BF" | sed -n 2p
-echo -n "  format komentar setelah restart -> "
-curl -s "localhost:8899/api/v1/feed/fortigate/annotated" -H "$BF" | sed -n 3p
 curl -s -c /tmp/tf.jar -X POST localhost:8899/api/v1/auth/login -H "$J" -d '{"password":"admin123"}' >/dev/null
-curl -s -b /tmp/tf.jar -X POST localhost:8899/api/v1/settings/reset -H "$J" -d '{"changes":{}}' >/dev/null
-echo "  (override dibersihkan kembali)"
+if grep -qi "TF_TTL_DAYS" /tmp/restart_warn.log; then
+  echo "     OK — log startup memperingatkan override lama TF_TTL_DAYS"
+else
+  echo "     GAGAL — tidak ada peringatan di log startup"
+fi
+echo -n "     nilai TTL tetap diterapkan (bukan diam-diam diabaikan) -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/settings" -o /dev/null -w "endpoint sysconfig masih hidup: %{http_code}\n"
 
 echo; echo "== 20. Username feed FortiGate + generator snippet =="
 echo -n "  a. TF_FEED_USERNAME kosong: username apa pun diterima -> "
@@ -351,3 +306,38 @@ curl -s -b /tmp/tf.jar "localhost:8899/api/v1/audit?limit=20" | python3 -c "
 import json,sys
 acts=[a['action'] for a in json.load(sys.stdin)['items']]
 print(f\"{acts.count('export')} export, {acts.count('backup_download')} backup_download\")"
+
+echo; echo "== 23. Snippet CLI FortiGate: path resource mengikuti tipe, default identity-check none =="
+echo -n "  a. default (tanpa parameter): identity-check none -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('OK' if 'set server-identity-check none' in d['snippet'] else 'GAGAL')"
+
+echo -n "  b. type=category -> resource harus /url -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet?type=category&category=192" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+ok = '/api/v1/feed/fortigate/url' in d['snippet'] and '/annotated' not in d['snippet']
+print('OK' if ok else 'GAGAL: ' + d['snippet'])"
+
+echo -n "  c. type=malware -> resource harus /hash -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet?type=malware" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+ok = '/api/v1/feed/fortigate/hash' in d['snippet'] and '/annotated' not in d['snippet']
+print('OK' if ok else 'GAGAL: ' + d['snippet'])"
+
+echo -n "  d. type=domain -> resource harus /domain -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet?type=domain" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('OK' if '/api/v1/feed/fortigate/domain' in d['snippet'] else 'GAGAL')"
+
+echo -n "  e. type=address (default) -> resource endpoint IP polos, tanpa /domain /hash /url -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet?type=address" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+s = d['snippet']
+ok = '/api/v1/feed/fortigate' in s and '/domain' not in s and '/hash' not in s and '/url' not in s
+print('OK' if ok else 'GAGAL: ' + s)"
+
+echo -n "  f. type=mac-address -> catatan peringatan ketidakcocokan muncul -> "
+curl -s -b /tmp/tf.jar "localhost:8899/api/v1/admin/fortigate-snippet?type=mac-address" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('OK' if any('mac address' in n.lower() for n in d['notes']) else 'GAGAL')"

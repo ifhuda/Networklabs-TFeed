@@ -10,16 +10,17 @@ from datetime import datetime, timezone
 from .database import days_ago, get_conn, transaction, utcnow
 
 INDICATOR_COLUMNS = (
-    "id, ip_address, type, severity, confidence, tlp, source, comment, "
+    "id, ip_address, ioc_type, type, severity, confidence, tlp, source, comment, "
     "status, feed_name, hit_count, first_seen, created_at, updated_at"
 )
 
 _UPSERT = """
 INSERT INTO indicators
-    (ip_address, type, severity, confidence, tlp, source, comment,
+    (ip_address, ioc_type, type, severity, confidence, tlp, source, comment,
      status, feed_name, hit_count, first_seen, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, 1, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 1, ?, ?, ?)
 ON CONFLICT(ip_address) DO UPDATE SET
+    ioc_type   = excluded.ioc_type,
     type       = excluded.type,
     severity   = excluded.severity,
     confidence = excluded.confidence,
@@ -49,8 +50,8 @@ def upsert_many(records: list[dict]) -> dict:
                 continue
             seen.add(ip)
             row = conn.execute(_UPSERT, (
-                ip, r["type"], r["severity"], r["confidence"], r["tlp"],
-                r["source"], r["comment"], r["feed_name"], now, now, now,
+                ip, r.get("ioc_type", "ip"), r["type"], r["severity"], r["confidence"],
+                r["tlp"], r["source"], r["comment"], r["feed_name"], now, now, now,
             )).fetchone()
             # hit_count == 1 hanya mungkin pada jalur INSERT; jalur UPDATE selalu menaikkannya.
             # (Jangan pakai perbandingan timestamp: resolusinya detik dan bisa bertabrakan.)
@@ -99,7 +100,7 @@ def delete_indicator(indicator_id: int) -> bool:
 def feed_rows(ttl_days: int | None = None, severity: str | None = None,
               tlp: str | None = None, feed_name: str | None = None,
               min_confidence: int | None = None, limit: int | None = None,
-              type_: str | None = None) -> list:
+              type_: str | None = None, ioc_type: str | None = None) -> list:
     ttl = config.TTL_DAYS if ttl_days is None else ttl_days
     where = ["status = 'active'"]
     params: list = []
@@ -135,9 +136,16 @@ def feed_rows(ttl_days: int | None = None, severity: str | None = None,
         add_ci_filter("type", type_)
     if feed_name:
         add_ci_filter("feed_name", feed_name)
+    if ioc_type:
+        # TIDAK memakai add_ci_filter: nilai ini datang dari kode (endpoint
+        # FortiGate feed mengunci ke 'ip' secara hardcode), bukan dari query
+        # string pengguna, jadi tidak perlu split-koma multi-nilai.
+        where.append("LOWER(ioc_type) = ?")
+        params.append(ioc_type.strip().lower())
 
     cap = min(limit or config.FEED_MAX_ENTRIES, config.FEED_MAX_ENTRIES)
-    sql = (f"SELECT ip_address, type, severity, confidence, tlp, source, comment, updated_at "
+    sql = (f"SELECT ip_address, ioc_type, type, severity, confidence, tlp, source, "
+           f"comment, updated_at "
            f"FROM indicators WHERE {' AND '.join(where)} "
            f"ORDER BY updated_at DESC LIMIT ?")
     return get_conn().execute(sql, [*params, cap]).fetchall()
@@ -164,6 +172,21 @@ def format_comment(row) -> str:
     return " | ".join(parts)
 
 
+def _ascii_safe_comment(text: str) -> str:
+    """Buang byte non-ASCII sebelum masuk ke komentar inline feed.
+
+    FortiOS memotong field description pada external-resource malware-hash
+    begitu bertemu byte non-ASCII pertama (dikonfirmasi lewat `diagnose sys
+    scanunit file-hash list malware` di server produksi — em-dash UTF-8
+    tiga-byte membuat separator "Sumber — Reputasi" terpotong jadi "Sumber "
+    saja, membuang seluruh info reputasi). Komentar bisa berasal dari mana
+    saja yang tidak kita kendalikan penuh (push FortiSOAR, webhook, TAXII),
+    jadi disaring di titik keluar tunggal ini — bukan hanya di satu sumber —
+    supaya karakter non-ASCII apa pun tidak diam-diam memotong baris feed.
+    """
+    return text.encode("ascii", "ignore").decode("ascii")
+
+
 def render_feed(rows, inline_comments: bool, header: bool = True, ttl_days: int = 0) -> str:
     lines: list[str] = []
     if header:
@@ -174,9 +197,10 @@ def render_feed(rows, inline_comments: bool, header: bool = True, ttl_days: int 
         ]
     for r in rows:
         if inline_comments:
-            meta = format_comment(r)
-            # Tanpa metadata (mis. format 'plain' pada entri tanpa komentar),
-            # tulis IP polos — jangan tinggalkan "#" menggantung.
+            meta = _ascii_safe_comment(format_comment(r))
+            # Tanpa metadata (mis. format 'plain' pada entri tanpa komentar,
+            # atau seluruhnya non-ASCII lalu tersaring habis), tulis IP polos
+            # — jangan tinggalkan "#" menggantung.
             lines.append(f"{r['ip_address']} # {meta}" if meta else r["ip_address"])
         else:
             lines.append(r["ip_address"])
@@ -184,11 +208,13 @@ def render_feed(rows, inline_comments: bool, header: bool = True, ttl_days: int 
 
 
 # --------------------------------------------------------------- dashboard API
-_SORTABLE = {"updated_at", "created_at", "ip_address", "severity", "confidence", "source", "type", "hit_count"}
+_SORTABLE = {"updated_at", "created_at", "ip_address", "ioc_type", "severity",
+            "confidence", "source", "type", "hit_count"}
 
 
 def search_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
-                      source: str = "", status: str = "", page: int = 1, size: int = 50,
+                      source: str = "", status: str = "", ioc_type: str = "",
+                      page: int = 1, size: int = 50,
                       sort: str = "updated_at", order: str = "desc") -> dict:
     where: list[str] = []
     params: list = []
@@ -198,7 +224,7 @@ def search_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str
                      "comment LIKE ? OR tlp LIKE ? OR severity LIKE ? OR feed_name LIKE ?)")
         params += [f"%{q}%"] * 7
     for column, value in (("severity", severity), ("tlp", tlp), ("type", type_),
-                          ("source", source), ("status", status)):
+                          ("source", source), ("status", status), ("ioc_type", ioc_type)):
         if value:
             vals = [v.strip() for v in value.split(",") if v.strip()]
             where.append(f"{column} IN ({','.join('?' * len(vals))})")
@@ -328,13 +354,13 @@ def prune() -> dict:
     return {"ts": now, "expired": expired, "deleted": deleted, "audit_purged": audit_purged}
 
 # --------------------------------------------------------------------- ekspor
-EXPORT_COLUMNS = ("id", "ip_address", "type", "severity", "confidence", "tlp",
+EXPORT_COLUMNS = ("id", "ip_address", "ioc_type", "type", "severity", "confidence", "tlp",
                   "source", "comment", "status", "feed_name", "hit_count",
                   "first_seen", "created_at", "updated_at")
 
 
 def _search_clause(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
-                   source: str = "", status: str = "") -> tuple[str, list]:
+                   source: str = "", status: str = "", ioc_type: str = "") -> tuple[str, list]:
     """Klausa WHERE yang sama persis dengan yang dipakai tabel dashboard,
     supaya 'ekspor hasil filter saat ini' benar-benar cocok dengan yang dilihat."""
     where: list[str] = []
@@ -344,7 +370,7 @@ def _search_clause(q: str = "", severity: str = "", tlp: str = "", type_: str = 
                      "comment LIKE ? OR tlp LIKE ? OR severity LIKE ? OR feed_name LIKE ?)")
         params += [f"%{q}%"] * 7
     for column, value in (("severity", severity), ("tlp", tlp), ("type", type_),
-                          ("source", source), ("status", status)):
+                          ("source", source), ("status", status), ("ioc_type", ioc_type)):
         if value:
             vals = [v.strip() for v in value.split(",") if v.strip()]
             where.append(f"{column} IN ({','.join('?' * len(vals))})")
@@ -353,14 +379,14 @@ def _search_clause(q: str = "", severity: str = "", tlp: str = "", type_: str = 
 
 
 def iter_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
-                    source: str = "", status: str = "", sort: str = "updated_at",
-                    order: str = "desc", batch: int = 500):
+                    source: str = "", status: str = "", ioc_type: str = "",
+                    sort: str = "updated_at", order: str = "desc", batch: int = 500):
     """Alirkan baris per potongan.
 
     Generator, bukan fetchall(): ekspor 130 ribu indikator yang dimuat sekaligus
     akan menahan puluhan MB di memori sebuah service yang dibatasi MemoryMax=1G.
     """
-    clause, params = _search_clause(q, severity, tlp, type_, source, status)
+    clause, params = _search_clause(q, severity, tlp, type_, source, status, ioc_type)
     sort = sort if sort in _SORTABLE else "updated_at"
     order = "ASC" if str(order).lower() == "asc" else "DESC"
     sql = (f"SELECT {', '.join(EXPORT_COLUMNS)} FROM indicators {clause} "
@@ -375,8 +401,8 @@ def iter_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str =
 
 
 def count_indicators(q: str = "", severity: str = "", tlp: str = "", type_: str = "",
-                     source: str = "", status: str = "") -> int:
-    clause, params = _search_clause(q, severity, tlp, type_, source, status)
+                     source: str = "", status: str = "", ioc_type: str = "") -> int:
+    clause, params = _search_clause(q, severity, tlp, type_, source, status, ioc_type)
     return get_conn().execute(
         f"SELECT COUNT(*) c FROM indicators {clause}", params).fetchone()["c"]
 

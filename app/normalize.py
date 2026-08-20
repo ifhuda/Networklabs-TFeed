@@ -69,6 +69,87 @@ def normalize_ip(raw: Any) -> str:
         raise NormalizeError(f"bukan alamat IP: {s!r}") from exc
 
 
+_DOMAIN_RE = re.compile(
+    r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
+_HASH_LEN_ALGO = {32: "MD5", 40: "SHA-1", 64: "SHA-256"}
+
+
+def normalize_domain(raw: Any) -> str:
+    """Terima nama domain/FQDN. Kembalikan bentuk kanonik huruf kecil tanpa titik akhir.
+
+    Validasi bentuk saja (label 1-63 karakter, tanpa diapit strip, dipisah titik),
+    bukan mengecek domain benar-benar terdaftar/bisa di-resolve — server ini tidak
+    boleh melakukan lookup DNS terhadap nilai yang datang dari sumber luar (TAXII
+    feed) sebagai bagian dari validasi; itu membocorkan indikator mana yang sedang
+    diproses ke DNS resolver pihak ketiga, dan bisa dipakai menunda respons dengan
+    domain yang sengaja lambat/tidak merespons.
+    """
+    if raw is None:
+        raise NormalizeError("nilai domain kosong")
+    s = str(raw).strip().strip('"').strip("'").rstrip(".").lower()
+    if not s:
+        raise NormalizeError("nilai domain kosong")
+    if len(s) > 253:
+        raise NormalizeError(f"domain terlalu panjang ({len(s)} karakter): {s[:50]}...")
+    if not _DOMAIN_RE.match(s):
+        raise NormalizeError(f"bukan nama domain yang valid: {s!r}")
+    return s
+
+
+def normalize_hash(raw: Any) -> str:
+    """Terima hash file heksadesimal (MD5/SHA-1/SHA-256). Kembalikan huruf kecil.
+
+    Panjang menentukan algoritma (32=MD5, 40=SHA-1, 64=SHA-256) — FortiSOAR tidak
+    selalu menyertakan nama algoritmanya secara eksplisit di setiap field, tapi
+    panjang string heksadesimal sudah cukup untuk menyimpulkannya.
+    """
+    if raw is None:
+        raise NormalizeError("nilai hash kosong")
+    s = str(raw).strip().strip('"').strip("'").lower()
+    if not s:
+        raise NormalizeError("nilai hash kosong")
+    if not re.fullmatch(r"[0-9a-f]+", s):
+        raise NormalizeError(f"hash harus heksadesimal: {s[:20]}...")
+    if len(s) not in _HASH_LEN_ALGO:
+        raise NormalizeError(
+            f"panjang hash tidak dikenal ({len(s)} karakter, harus 32/40/64): {s[:20]}...")
+    return s
+
+
+def hash_algo(hex_str: str) -> str:
+    """Nama algoritma dari panjang string — dipakai untuk label tampilan, bukan validasi."""
+    return _HASH_LEN_ALGO.get(len(hex_str), "Unknown")
+
+
+def normalize_url(raw: Any) -> str:
+    """Terima URL lengkap (skema + host). Kembalikan apa adanya setelah divalidasi.
+
+    Berbeda dari domain: skema (http/https/ftp) wajib ada dan tidak dipaksa huruf
+    kecil pada path/query — URL peka huruf besar-kecil di luar host, jadi menormalkan
+    seluruh string ke lowercase seperti domain akan merusak indikator yang valid
+    (mis. path yang sengaja dibuat menyerupai URL sah dengan huruf kapital tertentu).
+    Hanya skema dan host yang diperiksa/dinormalkan; sisanya dipertahankan.
+    """
+    if raw is None:
+        raise NormalizeError("nilai URL kosong")
+    s = str(raw).strip().strip('"').strip("'")
+    if not s:
+        raise NormalizeError("nilai URL kosong")
+    if len(s) > 2048:
+        raise NormalizeError(f"URL terlalu panjang ({len(s)} karakter)")
+
+    m = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://([^/?#\s]+)(.*)$", s)
+    if not m:
+        raise NormalizeError(f"bukan URL yang valid (skema://host hilang): {s[:60]!r}")
+    scheme, host, rest = m.group(1).lower(), m.group(2), m.group(3)
+    host_only = host.split("@")[-1].split(":")[0]   # buang userinfo@ dan :port untuk validasi
+    if not host_only or (not _DOMAIN_RE.match(host_only.rstrip(".").lower())
+                         and not re.fullmatch(r"[0-9a-fA-F:.\[\]]+", host_only)):
+        # host_only boleh domain biasa ATAU alamat IP (termasuk IPv6 berkurung [::1])
+        raise NormalizeError(f"host URL tidak valid: {host_only[:60]!r}")
+    return f"{scheme}://{host}{rest}"
+
+
 def is_routable(ip_str: str) -> bool:
     """False untuk loopback/multicast/unspecified — hindari indikator sampah."""
     head = ip_str.split("-")[0].split("/")[0]

@@ -145,9 +145,25 @@ async def _soar_poller():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Panel "Pengaturan" (perubahan instan tanpa restart) sudah dipensiunkan —
+    # semua pengaturan sekarang lewat Konfigurasi Sistem (.env + restart) saja,
+    # supaya cuma ada SATU tempat untuk mengubah kebijakan yang sama. Override
+    # yang sempat tersimpan di database dari versi sebelumnya TETAP diterapkan
+    # di sini (supaya server yang sudah berjalan tidak diam-diam kembali ke
+    # nilai .env begitu upgrade) — tapi dengan peringatan eksplisit, karena
+    # sekarang tidak ada lagi GUI untuk melihat atau mengubahnya.
+    stale = settings_store.overrides()
     failed = settings_store.apply_to_config()
     if failed:
         log.warning("Override pengaturan tidak valid, diabaikan: %s", ", ".join(failed))
+    if stale:
+        log.warning(
+            "%d pengaturan dari panel 'Pengaturan' (sudah dipensiunkan) masih aktif "
+            "dari database lama: %s. Nilai ini TIDAK lagi terlihat atau bisa diubah "
+            "lewat dashboard. Pindahkan ke /etc/threatfeed/threatfeed.env lewat "
+            "Konfigurasi Sistem, lalu jalankan 'sudo threatfeedctl "
+            "clear-legacy-settings' untuk membuang override basi ini dari database.",
+            len(stale), ", ".join(sorted(stale)))
     if not config.INGEST_TOKENS:
         log.warning("TF_INGEST_TOKENS kosong — endpoint /api/v1/ingest akan menolak semua request.")
     if not config.ADMIN_PASSWORD:
@@ -310,6 +326,62 @@ async def ingest_echo(request: Request, payload=Body(...),
 # "?" saat `set resource` diketik langsung, sehingga URL berparameter berubah jadi
 # path yang tidak ada dan dijawab 404 — dilaporkan GUI sebagai "Server not
 # reachable". Path tanpa query string menghilangkan seluruh kelas masalah itu.
+async def _build_feed_response(
+    request: Request, response: Response, ioc_type: str,
+    clean: bool | None, comments: bool | None, severity: str, type: str, tlp: str,
+    feed_name: str, min_confidence: int | None, ttl_days: int | None, limit: int | None,
+    actor: str,
+) -> PlainTextResponse:
+    """Inti pembuatan feed teks-biasa, dipakai bersama oleh endpoint IP/domain/hash.
+
+    `ioc_type` SELALU dikunci oleh endpoint pemanggil, tidak pernah dari query
+    string pengguna — mencampur alamat IP dengan domain atau hash dalam satu
+    feed `config system external-resource / set type address` akan membuat
+    FortiGate menolak seluruh feed atau memperlakukan baris yang salah bentuk
+    sebagai entri sampah, tanpa pesan error yang jelas ke operator.
+    """
+    started = time.perf_counter()
+    ip, ua = _req_meta(request)
+
+    rows = await asyncio.to_thread(
+        crud.feed_rows, ttl_days, severity, tlp, feed_name, min_confidence, limit,
+        type, ioc_type)
+
+    path = request.url.path
+    if path.endswith(("/clean", ".txt")):
+        inline = False
+    elif path.endswith("/annotated"):
+        inline = True
+    elif comments is not None:
+        inline = comments
+    elif clean is not None:
+        inline = not clean
+    else:
+        inline = config.FEED_INLINE_COMMENTS
+    header = inline
+
+    body = crud.render_feed(rows, inline_comments=inline, header=header,
+                            ttl_days=config.TTL_DAYS if ttl_days is None else ttl_days)
+    etag = '"' + hashlib.sha256(body.encode()).hexdigest()[:32] + '"'
+
+    await asyncio.to_thread(
+        crud.log_event, "feed_pull", actor, ip, ua, entries_ok=len(rows), status_code=200,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        detail=f"ioc_type={ioc_type} clean={clean} inline={inline} sev={severity or '*'} "
+               f"type={type or '*'} tlp={tlp or '*'}",
+    )
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    response.headers["X-Feed-Entries"] = str(len(rows))
+    response.headers["X-Feed-Generated"] = utcnow()
+    return PlainTextResponse(body, headers=dict(response.headers),
+                             media_type="text/plain; charset=utf-8")
+
+
 @app.get("/api/v1/feed/fortigate", response_class=PlainTextResponse, tags=["feed"])
 @app.get("/api/v1/feed/fortigate/clean", response_class=PlainTextResponse, tags=["feed"],
          include_in_schema=False)
@@ -331,52 +403,85 @@ async def fortigate_feed(
     limit: int | None = Query(None, ge=1),
     actor: str = Depends(security.require_feed),
 ):
-    """Plain text, 1 entri per baris — format External Resource FortiOS."""
-    started = time.perf_counter()
-    ip, ua = _req_meta(request)
+    """Plain text, 1 entri per baris — format External Resource FortiOS `type address`.
 
-    rows = await asyncio.to_thread(
-        crud.feed_rows, ttl_days, severity, tlp, feed_name, min_confidence, limit, type)
+    Hanya menyajikan indikator IP (ioc_type='ip'). Untuk domain, hash, atau URL,
+    pakai /api/v1/feed/fortigate/domain, /hash, atau /url.
+    """
+    return await _build_feed_response(request, response, "ip", clean, comments, severity,
+                                      type, tlp, feed_name, min_confidence, ttl_days,
+                                      limit, actor)
 
-    # Urutan penentuan, dari yang paling spesifik:
-    #   1. path /clean dan .txt selalu bersih; /annotated selalu berkomentar
-    #   2. ?comments= atau ?clean= bila diberikan
-    #   3. TF_FEED_INLINE_COMMENTS sebagai default instalasi
-    # Path khusus disediakan karena CLI FortiGate kadang memakan karakter "?",
-    # sehingga URL berparameter berubah jadi 404.
-    path = request.url.path
-    if path.endswith(("/clean", ".txt")):
-        inline = False
-    elif path.endswith("/annotated"):
-        inline = True
-    elif comments is not None:
-        inline = comments
-    elif clean is not None:
-        inline = not clean
-    else:
-        inline = config.FEED_INLINE_COMMENTS
-    header = inline
 
-    body = crud.render_feed(rows, inline_comments=inline, header=header,
-                            ttl_days=config.TTL_DAYS if ttl_days is None else ttl_days)
-    etag = '"' + hashlib.sha256(body.encode()).hexdigest()[:32] + '"'
+@app.get("/api/v1/feed/fortigate/domain", response_class=PlainTextResponse, tags=["feed"])
+@app.get("/api/v1/feed/fortigate/domain/clean", response_class=PlainTextResponse,
+         tags=["feed"], include_in_schema=False)
+@app.get("/api/v1/feed/fortigate/domain/annotated", response_class=PlainTextResponse,
+         tags=["feed"], include_in_schema=False)
+async def fortigate_feed_domain(
+    request: Request,
+    response: Response,
+    clean: bool | None = Query(None),
+    comments: bool | None = Query(None),
+    severity: str = Query(""), type: str = Query(""), tlp: str = Query(""),
+    feed_name: str = Query(""), min_confidence: int | None = Query(None, ge=0, le=100),
+    ttl_days: int | None = Query(None, ge=0, le=3650), limit: int | None = Query(None, ge=1),
+    actor: str = Depends(security.require_feed),
+):
+    """Plain text, 1 domain per baris — untuk external-resource `type domain`."""
+    return await _build_feed_response(request, response, "domain", clean, comments, severity,
+                                      type, tlp, feed_name, min_confidence, ttl_days,
+                                      limit, actor)
 
-    await asyncio.to_thread(
-        crud.log_event, "feed_pull", actor, ip, ua, entries_ok=len(rows), status_code=200,
-        duration_ms=int((time.perf_counter() - started) * 1000),
-        detail=f"clean={clean} inline={inline} sev={severity or '*'} "
-               f"type={type or '*'} tlp={tlp or '*'}",
-    )
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+@app.get("/api/v1/feed/fortigate/hash", response_class=PlainTextResponse, tags=["feed"])
+@app.get("/api/v1/feed/fortigate/hash/clean", response_class=PlainTextResponse,
+         tags=["feed"], include_in_schema=False)
+async def fortigate_feed_hash(
+    request: Request,
+    response: Response,
+    clean: bool | None = Query(None),
+    comments: bool | None = Query(None),
+    severity: str = Query(""), type: str = Query(""), tlp: str = Query(""),
+    feed_name: str = Query(""), min_confidence: int | None = Query(None, ge=0, le=100),
+    ttl_days: int | None = Query(None, ge=0, le=3650), limit: int | None = Query(None, ge=1),
+    actor: str = Depends(security.require_feed),
+):
+    """Plain text, 1 hash file per baris.
 
-    response.headers["ETag"] = etag
-    response.headers["Cache-Control"] = "no-cache, must-revalidate"
-    response.headers["X-Feed-Entries"] = str(len(rows))
-    response.headers["X-Feed-Generated"] = utcnow()
-    return PlainTextResponse(body, headers=dict(response.headers),
-                             media_type="text/plain; charset=utf-8")
+    Dukungan FortiOS untuk external-resource berbasis hash file bervariasi
+    antar versi (mis. malware-hash) — endpoint ini tetap berguna untuk ekspor
+    dan integrasi lain (AV, EDR) meski tidak selalu dikonsumsi langsung oleh
+    firewall policy seperti feed IP/domain.
+    """
+    return await _build_feed_response(request, response, "hash", clean, comments, severity,
+                                      type, tlp, feed_name, min_confidence, ttl_days,
+                                      limit, actor)
+
+
+@app.get("/api/v1/feed/fortigate/url", response_class=PlainTextResponse, tags=["feed"])
+@app.get("/api/v1/feed/fortigate/url/clean", response_class=PlainTextResponse,
+         tags=["feed"], include_in_schema=False)
+async def fortigate_feed_url(
+    request: Request,
+    response: Response,
+    clean: bool | None = Query(None),
+    comments: bool | None = Query(None),
+    severity: str = Query(""), type: str = Query(""), tlp: str = Query(""),
+    feed_name: str = Query(""), min_confidence: int | None = Query(None, ge=0, le=100),
+    ttl_days: int | None = Query(None, ge=0, le=3650), limit: int | None = Query(None, ge=1),
+    actor: str = Depends(security.require_feed),
+):
+    """Plain text, 1 URL lengkap per baris.
+
+    FortiGate tidak punya external-resource `type url` — URL biasanya dikonsumsi
+    lewat kategori web filter kustom (`type category`) atau diproses aplikasi lain
+    (proxy, SIEM). Endpoint ini menyajikan URL apa adanya (skema+host+path) untuk
+    integrasi semacam itu, terpisah dari feed IP/domain/hash.
+    """
+    return await _build_feed_response(request, response, "url", clean, comments, severity,
+                                      type, tlp, feed_name, min_confidence, ttl_days,
+                                      limit, actor)
 
 
 @app.get("/api/v1/feed/stats", tags=["feed"])
@@ -429,11 +534,12 @@ async def list_indicators(
     actor: str = Depends(security.require_session),
     q: str = "", severity: str = "", tlp: str = "", type: str = "",
     source: str = "", status_: str = Query("", alias="status"),
+    ioc_type: str = Query("", description="Filter jenis: ip, domain, hash (pisahkan koma)"),
     page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=500),
     sort: str = "updated_at", order: str = "desc",
 ):
     return await asyncio.to_thread(crud.search_indicators, q, severity, tlp, type,
-                                   source, status_, page, size, sort, order)
+                                   source, status_, ioc_type, page, size, sort, order)
 
 
 @app.get("/api/v1/filters", tags=["dashboard"])
@@ -453,40 +559,14 @@ async def remove_indicator(indicator_id: int, request: Request,
     return {"status": "ok", "deleted": indicator_id}
 
 
-class SettingsBody(BaseModel):
-    changes: dict[str, str] = Field(default_factory=dict)
-
-
-@app.get("/api/v1/settings", tags=["dashboard"])
-async def get_settings(actor: str = Depends(security.require_session)):
-    return {"settings": await asyncio.to_thread(settings_store.current),
-            "readonly_keys": list(settings_store.SECRET_KEYS),
-            "env_file": "/etc/threatfeed/threatfeed.env"}
-
-
-@app.put("/api/v1/settings", tags=["dashboard"])
-async def put_settings(request: Request, body: SettingsBody,
-                       actor: str = Depends(security.require_session)):
-    try:
-        result = await asyncio.to_thread(settings_store.update, body.changes, actor)
-    except settings_store.ValidationError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    ip, ua = _req_meta(request)
-    await asyncio.to_thread(crud.log_event, "settings_update", actor, ip, ua,
-                            entries_ok=len(result["changed"]),
-                            detail=json.dumps(result["values"])[:1000])
-    return result
-
-
-@app.post("/api/v1/settings/reset", tags=["dashboard"])
-async def reset_settings(request: Request, body: SettingsBody,
-                         actor: str = Depends(security.require_session)):
-    keys = list(body.changes) or None
-    reset_keys = await asyncio.to_thread(settings_store.reset, keys, actor)
-    ip, ua = _req_meta(request)
-    await asyncio.to_thread(crud.log_event, "settings_reset", actor, ip, ua,
-                            entries_ok=len(reset_keys), detail=",".join(reset_keys))
-    return {"reset": reset_keys}
+# Endpoint /api/v1/settings (panel "Pengaturan" — perubahan instan tanpa restart)
+# DIPENSIUNKAN. Seluruh field di sana 100% tumpang tindih dengan Konfigurasi
+# Sistem, dan dua tempat untuk mengubah nilai yang sama membingungkan operator
+# soal mana yang berlaku. Tabel `settings` tetap ada di skema database (lihat
+# lifespan()) supaya server yang sempat memakai panel lama tidak diam-diam
+# kehilangan nilai yang tersimpan di sana saat upgrade — tapi tidak ada lagi
+# jalur GUI/API untuk menulis ke situ; pembersihannya lewat
+# `threatfeedctl clear-legacy-settings`.
 
 
 # ======================================================= SYSTEM CONFIGURATION
@@ -604,7 +684,7 @@ async def fortigate_snippet(request: Request, reveal: bool = Query(False),
                             name: str = Query("IoC-WATCH-Blocklist"),
                             type: str = Query("address"),
                             category: int = Query(192, ge=192, le=221),
-                            identity_check: str = Query("full"),
+                            identity_check: str = Query("none"),
                             refresh_rate: int = Query(5, ge=1, le=43200),
                             severity: str = Query(""),
                             indicator_type: str = Query("", description="Filter kolom type indikator"),
@@ -625,8 +705,28 @@ async def fortigate_snippet(request: Request, reveal: bool = Query(False),
     host = request.headers.get("host") or request.url.netloc
     base = f"{scheme}://{host}"
 
-    path = "/api/v1/feed/fortigate/annotated" if config.FEED_INLINE_COMMENTS \
-        else "/api/v1/feed/fortigate"
+    identity_check = identity_check if identity_check in ("full", "basic", "none") else "none"
+    valid_types = ("address", "domain", "malware", "mac-address", "category")
+    res_type = type if type in valid_types else "address"
+
+    # Path feed HARUS mengikuti tipe external-resource yang dipilih — server
+    # ini menyajikan empat feed terpisah per ioc_type (ip/domain/hash/url) dan
+    # mengunci masing-masing di sisi server. Snippet yang menunjuk 'category'
+    # (URL) atau 'malware' (hash) ke endpoint IP polos akan selalu ditolak
+    # FortiGate karena isinya tidak sesuai — itulah yang terjadi sebelum ini.
+    if res_type == "domain":
+        path = "/api/v1/feed/fortigate/domain/annotated" if config.FEED_INLINE_COMMENTS \
+            else "/api/v1/feed/fortigate/domain"
+    elif res_type == "malware":
+        # Endpoint hash cuma punya varian /clean, tidak ada /annotated.
+        path = "/api/v1/feed/fortigate/hash"
+    elif res_type == "category":
+        # Endpoint url cuma punya varian /clean, tidak ada /annotated.
+        path = "/api/v1/feed/fortigate/url"
+    else:
+        path = "/api/v1/feed/fortigate/annotated" if config.FEED_INLINE_COMMENTS \
+            else "/api/v1/feed/fortigate"
+
     params = []
     for key, val in (("severity", severity), ("type", indicator_type),
                      ("tlp", tlp), ("feed_name", feed_name)):
@@ -649,10 +749,6 @@ async def fortigate_snippet(request: Request, reveal: bool = Query(False),
     else:
         token = "<TOKEN_FEED>" if token_set else "<KOSONG — feed tanpa autentikasi>"
 
-    identity_check = identity_check if identity_check in ("full", "basic", "none") else "full"
-    valid_types = ("address", "domain", "malware", "mac-address", "category")
-    res_type = type if type in valid_types else "address"
-
     lines = [
         "config system external-resource",
         f'    edit "{name}"',
@@ -672,23 +768,27 @@ async def fortigate_snippet(request: Request, reveal: bool = Query(False),
     lines += ["        set status enable", "    next", "end"]
 
     notes = []
-    if res_type != "address":
+    if res_type == "mac-address":
         notes.append(
-            f"Server ini hanya menghasilkan daftar alamat IP, sedangkan 'set type "
-            f"{res_type}' membuat FortiGate mengharapkan isi yang berbeda "
-            f"({'domain' if res_type == 'domain' else 'hash malware' if res_type == 'malware' else 'alamat MAC' if res_type == 'mac-address' else 'daftar URL'}). "
-            f"Entri kemungkinan besar ditolak — pakai 'address' kecuali Anda memang "
-            f"mengarahkannya ke sumber lain.")
+            "Server ini tidak punya jenis indikator MAC address (hanya IP/domain/hash/URL) — "
+            "'set type mac-address' hampir pasti tidak cocok kecuali diarahkan ke sumber lain.")
     if res_type == "category":
         notes.append(f"Nomor kategori {category} harus unik di FortiGate dan berada "
-                     f"pada rentang 192–221 yang dicadangkan untuk kategori buatan sendiri.")
+                     f"pada rentang 192–221 yang dicadangkan untuk kategori buatan sendiri. "
+                     f"Kategori 'Remote' baru berlaku setelah dipasang ke Web Filter profile "
+                     f"(aksi Block) — dan trafik HTTPS butuh SSL Deep Inspection aktif di "
+                     f"policy, karena tanpa itu FortiGate hanya melihat hostname (SNI), bukan "
+                     f"path URL yang dicocokkan.")
+    if res_type == "malware":
+        notes.append("Feed tipe malware (hash) dipasang lewat AntiVirus profile -> "
+                     "'Use external malware block list', bukan langsung ke firewall policy.")
     if not config.FEED_USERNAME:
         notes.append("TF_FEED_USERNAME kosong: username apa pun diterima. Isi di atas "
                      "hanya contoh; hanya token yang benar-benar diperiksa.")
     if identity_check == "none":
         notes.append("server-identity-check none melewati verifikasi sertifikat. "
-                     "Pakai hanya untuk sertifikat self-signed di lab.")
-    if config.FEED_INLINE_COMMENTS:
+                     "Pakai full bila FortiGate sudah mempercayai sertifikat server ini.")
+    if config.FEED_INLINE_COMMENTS and res_type in ("address", "domain"):
         notes.append("Feed memakai komentar inline. Setelah diterapkan, cocokkan "
                      "'diagnose sys external-resource entry-list' dengan "
                      "'threatfeedctl feed | grep -c .' — FortiOS tidak menjamin format ini.")
@@ -758,18 +858,19 @@ async def export_indicators(
     format: str = Query("csv", pattern="^(csv|json)$"),
     q: str = "", severity: str = "", tlp: str = "", type: str = "",
     source: str = "", status_: str = Query("", alias="status"),
+    ioc_type: str = "",
     sort: str = "updated_at", order: str = "desc",
 ):
     """Ekspor indikator sesuai filter yang sedang aktif di dashboard."""
     ip, ua = _req_meta(request)
     total = await asyncio.to_thread(crud.count_indicators, q, severity, tlp, type,
-                                    source, status_)
+                                    source, status_, ioc_type)
     await asyncio.to_thread(
         crud.log_event, "export", actor, ip, ua, entries_ok=total,
         detail=f"format={format} q={q or '*'} severity={severity or '*'} "
-               f"type={type or '*'} status={status_ or '*'}")
+               f"type={type or '*'} ioc_type={ioc_type or '*'} status={status_ or '*'}")
 
-    rows = crud.iter_indicators(q, severity, tlp, type, source, status_, sort, order)
+    rows = crud.iter_indicators(q, severity, tlp, type, source, status_, ioc_type, sort, order)
     if format == "json":
         return StreamingResponse(
             _json_stream(rows), media_type="application/json; charset=utf-8",

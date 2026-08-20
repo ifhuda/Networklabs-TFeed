@@ -20,14 +20,16 @@ Dua kuirk yang membuat modul ini tidak bisa memakai parser STIX generik begitu s
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 
 import httpx
 
 from . import config
-from .normalize import (NormalizeError, normalize_confidence, normalize_ip,
-                        normalize_severity, normalize_tlp)
+from .normalize import (NormalizeError, hash_algo, normalize_confidence,
+                        normalize_domain, normalize_hash, normalize_ip,
+                        normalize_severity, normalize_tlp, normalize_url)
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 
@@ -44,11 +46,20 @@ REPUTATION_SEVERITY = {
     "clean": "Info", "trusted": "Info", "safe": "Info", "whitelisted": "Info",
 }
 
-# Pola STIX 2.1 baku: [ipv4-addr:value = '1.2.3.4'] atau ipv6-addr / domain-name / url.
+# Pola STIX 2.1 baku untuk alamat/domain/url: [ipv4-addr:value = '1.2.3.4'] dst.
 # FortiSOAR terkadang menggabungkan beberapa observable dengan OR di satu pattern;
 # semua kecocokan diambil, bukan hanya yang pertama.
-_PATTERN_RE = re.compile(
-    r"(ipv4-addr|ipv6-addr):value\s*=\s*'([^']+)'", re.IGNORECASE)
+_ADDR_PATTERN_RE = re.compile(
+    r"(ipv4-addr|ipv6-addr|domain-name|url):value\s*=\s*'([^']+)'", re.IGNORECASE)
+# Pola STIX 2.1 baku untuk hash file: [file:hashes.'SHA-256' = '...'] — kutip di
+# sekitar nama algoritma tidak selalu ada, dan penulisan SHA-1/SHA1 bervariasi.
+_HASH_PATTERN_RE = re.compile(
+    r"file:hashes\.'?(?:MD5|SHA-?1|SHA-?256)'?\s*=\s*'([^']+)'", re.IGNORECASE)
+
+_STIX_TYPE_TO_IOC = {"ipv4-addr": "ip", "ipv6-addr": "ip", "domain-name": "domain",
+                     "url": "url"}
+_NORMALIZERS = {"ip": normalize_ip, "domain": normalize_domain, "hash": normalize_hash,
+                "url": normalize_url}
 
 
 class TaxiiError(RuntimeError):
@@ -107,24 +118,65 @@ def test_connection(base_url: str, key_name: str, api_key: str, verify_tls: bool
     return {"server_title": title, "collections": out}
 
 
-def _extract_ips(stix_object: dict) -> list[str]:
-    """Ambil semua IP dari satu objek STIX, mencoba `pattern` lalu jatuh ke `value`."""
-    found: list[str] = []
-    pattern = stix_object.get("pattern")
+def _detect_fortisoar_ioc_type(obj: dict) -> str:
+    """Simpulkan jenis indikator untuk bentuk non-standar FortiSOAR (field `value`
+    langsung, bukan `pattern` STIX). `indicatorTypes` dan `typeOfFeed` dicek dulu
+    karena eksplisit dari FortiSOAR sendiri; bentuk nilai literal hanya dipakai
+    sebagai upaya terakhir bila kedua field itu tidak ada atau tidak jelas.
+    """
+    types = obj.get("indicatorTypes") or []
+    feed_type = str(obj.get("typeOfFeed") or "").lower()
+    hay = " ".join([str(t).lower() for t in types] + [feed_type])
+    if "hash" in hay or "file" in hay or "md5" in hay or "sha" in hay:
+        return "hash"
+    if "url" in hay:
+        return "url"
+    if "domain" in hay:
+        return "domain"
+    if "ip" in hay:
+        return "ip"
+
+    raw = obj.get("value")
+    v = str(raw[0] if isinstance(raw, list) and raw else raw or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", v):
+        return "hash"
+    if "://" in v:
+        return "url"
+    try:
+        ipaddress.ip_address(v)
+        return "ip"
+    except ValueError:
+        pass
+    return "domain"
+
+
+def _extract_iocs(obj: dict) -> list[tuple[str, str]]:
+    """Ambil semua indikator (ip/domain/hash) dari satu objek TAXII.
+
+    Mencoba `pattern` STIX baku dulu (bisa memuat lebih dari satu jenis, mis. IP
+    dan hash sekaligus lewat OR), lalu jatuh ke field `value` mentah dengan jenis
+    disimpulkan dari `indicatorTypes`/`typeOfFeed` — bentuk yang justru dipakai
+    FortiSOAR untuk mayoritas objeknya.
+    """
+    found: list[tuple[str, str]] = []
+    pattern = obj.get("pattern")
     if isinstance(pattern, str):
-        found += [m.group(2) for m in _PATTERN_RE.finditer(pattern)]
+        for stix_type, val in _ADDR_PATTERN_RE.findall(pattern):
+            found.append((_STIX_TYPE_TO_IOC[stix_type.lower()], val))
+        for val in _HASH_PATTERN_RE.findall(pattern):
+            found.append(("hash", val))
 
     if not found:
-        # Bentuk non-standar FortiSOAR: field `value` langsung berisi IP/CIDR.
-        raw = stix_object.get("value")
-        if isinstance(raw, str) and raw.strip():
-            found.append(raw.strip())
-        elif isinstance(raw, list):
-            found += [str(v).strip() for v in raw if str(v).strip()]
+        raw = obj.get("value")
+        vals = [str(v).strip() for v in (raw if isinstance(raw, list) else [raw])
+                if v and str(v).strip()]
+        if vals:
+            ioc_type = _detect_fortisoar_ioc_type(obj)
+            found.extend((ioc_type, v) for v in vals)
     return found
 
 
-def _stix_to_record(obj: dict, default_source: str, default_feed: str) -> list[dict]:
+def _object_to_records(obj: dict, default_source: str, default_feed: str) -> list[dict]:
     """Ubah satu objek TAXII menjadi satu atau lebih record siap-upsert.
 
     FortiSOAR TIDAK mengirim STIX 2.1 standar untuk feed ini — objeknya adalah
@@ -132,14 +184,20 @@ def _stix_to_record(obj: dict, default_source: str, default_feed: str) -> list[d
     kapital di tengah, bukan `tlp`) ada langsung sebagai field objek, `pattern`
     dan `labels` selalu kosong. Memperlakukannya sebagai STIX baku membuat type
     jatuh ke "Indicator" generik, comment jatuh ke nilai `name` (yang kebetulan
-    berisi IP itu sendiri), dan source selalu memakai nama feed lokal — bukan
-    sumber intel sesungguhnya seperti "IPsum Threat Intelligence Feed".
+    berisi nilai indikator itu sendiri), dan source selalu memakai nama feed
+    lokal — bukan sumber intel sesungguhnya seperti "IPsum Threat Intelligence
+    Feed" atau "FortiGuard Outbreak".
+
+    Satu koleksi FortiGuard Outbreak lazim mencampur alamat IP dan hash file
+    (`typeOfFeed: "FileHash-SHA256"`) dalam koleksi yang sama — setiap indikator
+    diproses menurut jenisnya sendiri (`ioc_type`), bukan diasumsikan semuanya IP.
     """
-    if obj.get("type") not in ("indicator", "ipv4-addr", "ipv6-addr"):
+    if obj.get("type") not in ("indicator", "ipv4-addr", "ipv6-addr",
+                               "domain-name", "file", "url"):
         return []
 
-    ips_raw = _extract_ips(obj)
-    if not ips_raw:
+    iocs_raw = _extract_iocs(obj)
+    if not iocs_raw:
         return []
 
     reputation = obj.get("reputation")                        # "Malicious", "Suspicious", ...
@@ -159,25 +217,33 @@ def _stix_to_record(obj: dict, default_source: str, default_feed: str) -> list[d
     else:
         severity_raw = obj.get("x_severity") or obj.get("severity") or "Medium"
     type_value = reputation or (labels[0].title() if labels else "Indicator")
-    comment = " — ".join(p for p in (source_name, reputation) if p)[:500] \
+    # Pemisah ASCII biasa, BUKAN em-dash "—": FortiOS memotong field
+    # description pada external-resource malware-hash begitu ketemu byte
+    # non-ASCII pertama. Em-dash adalah UTF-8 tiga-byte (\xe2\x80\x94) —
+    # "FortiGuard Outbreak — Malicious" terpotong jadi "FortiGuard Outbreak "
+    # tepat di titik itu, membuang seluruh info reputasi dari deskripsi yang
+    # dilihat scanunit daemon. Dikonfirmasi lewat `diagnose sys scanunit
+    # file-hash list malware` di server produksi.
+    comment = " - ".join(p for p in (source_name, reputation) if p)[:500] \
         or (obj.get("description") or "")[:500]
 
     out = []
-    for raw_ip in ips_raw:
+    for ioc_type, raw_val in iocs_raw:
+        normalizer = _NORMALIZERS.get(ioc_type)
+        if normalizer is None:
+            continue
         try:
-            ip = normalize_ip(raw_ip)
+            value = normalizer(raw_val)
         except (NormalizeError, ValueError):
             # NormalizeError untuk input yang jelas kosong/rusak; ValueError
-            # mentah dari ipaddress.ip_address() untuk input yang bentuknya
-            # sama sekali bukan IP — hash SHA-256 dari koleksi FortiGuard
-            # Outbreak (typeOfFeed=FileHash-SHA256) masuk lewat jalur ini.
-            # Tanpa menangkap ValueError, satu objek non-IP di tengah koleksi
-            # men-crash SELURUH siklus tarikan (500), bukan cuma melewati
-            # objek itu — koleksi campuran IP+hash jadi tidak bisa ditarik
-            # sama sekali walau mayoritas isinya valid.
-            continue          # domain/URL/hash di koleksi yang sama — bukan error, dilewati
+            # mentah tetap dijaga sebagai jaring pengaman meski normalize_ip
+            # sudah tidak membocorkannya lagi — satu objek yang bentuknya
+            # tidak terduga tidak boleh men-crash SELURUH siklus tarikan (500),
+            # hanya dilewati sendiri.
+            continue
         out.append({
-            "ip_address": ip,
+            "ip_address": value,
+            "ioc_type": ioc_type,
             "type": type_value,
             "severity": normalize_severity(severity_raw),
             "confidence": normalize_confidence(confidence_raw),
@@ -217,12 +283,22 @@ def pull_collection(base_url: str, key_name: str, api_key: str, collection_id: s
             raw_object_count += len(objects)
 
             for obj in objects:
-                records.extend(_stix_to_record(obj, f"FortiSOAR TAXII:{feed_name}", feed_name))
+                records.extend(_object_to_records(obj, f"FortiSOAR TAXII:{feed_name}", feed_name))
 
             pages += 1
+            prev_cursor = next_cursor
             next_cursor = body.get("next")
             has_more = body.get("more", False)
             if not next_cursor or not has_more:
+                break
+            if next_cursor == prev_cursor:
+                # Server mengembalikan cursor `next` yang sama dengan siklus
+                # sebelumnya sambil tetap bilang more=true — melanjutkan hanya
+                # akan mengulang permintaan halaman yang sama sampai page_limit
+                # habis (terlihat di log sebagai deretan `next=N` identik
+                # berkali-kali). Ini kerusakan sisi server, bukan sesuatu yang
+                # bisa diperbaiki dengan meminta lebih banyak — berhenti sekarang
+                # sambil tetap melaporkan apa yang berhasil ditarik.
                 break
 
     return {"raw_objects": raw_object_count, "records": records, "pages": pages}
